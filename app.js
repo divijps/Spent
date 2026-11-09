@@ -8,7 +8,9 @@ import {
 const STORE = 'spent.v1'; // same key as the first version, so existing entries carry over
 const $ = (id) => document.getElementById(id);
 const el = {
-  main: $('main'), page: $('page'), title: $('title'), sub: $('sub'), goToday: $('goToday'), tip: $('tip'),
+  main: $('main'), page: $('page'), title: $('title'), goToday: $('goToday'), tip: $('tip'),
+  dayName: $('dayName'), dcDay: $('dcDay'), dcStatus: $('dcStatus'), dcAmount: $('dcAmount'),
+  dcLabel: $('dcLabel'), dcUpdated: $('dcUpdated'),
   strip: $('strip'), stripDays: $('stripDays'), stripDone: $('stripDone'),
   list: $('list'), form: $('form'), input: $('input'), chips: $('chips'), hint: $('hint'),
   card: $('card'), cardHint: $('cardHint'), ring: $('ring'), ringArc: $('ringArc'),
@@ -70,6 +72,7 @@ const blank = () => ({
   cards: [],
   settings: { currency: 'USD', budget: null, cardMonthly: null },
   ui: { tipSeen: false, cardOpens: 0, edited: false },
+  updatedAt: null, // when entries, bills, cards or settings last changed
 });
 const arr = (x) => (Array.isArray(x) ? x : []);
 const posInt = (n) => Number.isInteger(n) && n > 0;
@@ -89,13 +92,25 @@ function load() {
     if (raw.ui?.tipSeen === true) s.ui.tipSeen = true;
     if (raw.ui?.edited === true) s.ui.edited = true;
     if (Number.isInteger(raw.ui?.cardOpens)) s.ui.cardOpens = raw.ui.cardOpens;
+    s.updatedAt = Number.isFinite(raw.updatedAt) ? raw.updatedAt
+      : s.entries.reduce((m, e) => (e.kind ? m : Math.max(m, e.at || 0)), 0) || null;
   } catch { /* unreadable: start fresh */ }
   return s;
 }
 
 let state = load();
 
-function save() {
+const dataKey = () => JSON.stringify([state.entries, state.bills, state.cards, state.settings]);
+let lastData = dataKey();
+
+/* `quiet` is for changes the app makes on its own (bills landing on their dates),
+   which shouldn't count as you updating it. */
+function save({ quiet = false } = {}) {
+  const key = dataKey();
+  if (key !== lastData) {
+    lastData = key;
+    if (!quiet) state.updatedAt = Date.now();
+  }
   try {
     localStorage.setItem(STORE, JSON.stringify(state));
     return true;
@@ -283,7 +298,7 @@ function postDue() {
       changed = true;
     }
   }
-  if (changed) save();
+  if (changed) save({ quiet: true });
 }
 
 /** Unpaid card payments, then what's due in the next `days` days. */
@@ -331,10 +346,52 @@ function tween(node, value, show, animate) {
 
 /* ---------------- the day ---------------- */
 
-function subText(out, inn, count) {
-  if (!count) return view === todayKey() ? 'Nothing yet' : 'Nothing logged';
-  if (!out && inn) return `${money(inn)} in`;
-  return inn ? `${money(out)} spent, ${money(inn)} in` : `${money(out)} spent`;
+const STATUS_WORDS = { good: 'On track', tight: 'Running tight', over: 'Over budget' };
+
+function statusText(status, ym) {
+  const month = fmt({ month: 'short' }).format(parseKey(`${ym}-01`));
+  const word = status === 'good' && ym < monthOf(todayKey()) ? 'Under budget' : STATUS_WORDS[status];
+  return word ? `${word} in ${month}` : '';
+}
+
+/* How the month is going: over budget, on pace to run out before it ends, or on track. */
+function monthStatus(ym) {
+  const m = monthMath(ym);
+  if (!m.B) return 'calm';
+  if (m.left < 0) return 'over';
+  const t = todayKey();
+  if (ym !== monthOf(t)) return 'good';
+  const day = Number(t.slice(8));
+  const projected = m.left - (m.flexSpent / day) * (m.dim - day);
+  return projected >= 0 ? 'good' : 'tight';
+}
+
+function updatedText(ts) {
+  if (!ts) return '';
+  if (Date.now() - ts < 60_000) return 'Updated just now';
+  const d = new Date(ts);
+  const k = keyOf(d);
+  const t = todayKey();
+  if (k === t) return `Updated ${fmt({ hour: 'numeric', minute: '2-digit' }).format(d)}`;
+  if (k === addDays(t, -1)) return 'Updated yesterday';
+  return `Updated ${shortDate(k)}`;
+}
+
+/* The card at the top: the day, what went out, the month's status as its colour, and when data last changed. */
+function renderDayCard(items, out, inn, animate) {
+  const day = dayTitle(view);
+  const ym = monthOf(view);
+  const status = monthStatus(ym);
+  el.dayName.textContent = day;
+  el.dcDay.textContent = day;
+  el.title.className = `daycard ${status}`;
+  el.dcStatus.hidden = status === 'calm';
+  el.dcStatus.textContent = statusText(status, ym);
+  tween(el.dcAmount, out, (v) => money(v), animate);
+  el.dcLabel.textContent = !items.length
+    ? (view === todayKey() ? 'Nothing yet' : 'Nothing logged')
+    : inn ? `spent, ${money(inn)} in` : 'spent';
+  el.dcUpdated.textContent = updatedText(state.updatedAt);
 }
 
 function rowEl(e, isNew) {
@@ -350,14 +407,8 @@ function renderDay(opts = {}) {
   const items = byDay(view);
   const { out, inn } = totals(items);
   const isToday = view === todayKey();
-  el.title.textContent = dayTitle(view);
   el.goToday.hidden = isToday;
-  if (items.length) {
-    tween(el.sub, out, (v) => subText(v, inn, items.length), opts.animate);
-  } else {
-    shown.delete(el.sub);
-    el.sub.textContent = '';
-  }
+  renderDayCard(items, out, inn, opts.animate);
   el.tip.hidden = !items.length || state.ui.tipSeen;
   el.list.replaceChildren(...items.map((e) => rowEl(e, e.id === opts.flash)));
   renderStrip();
@@ -1468,6 +1519,12 @@ function cardPlanText() {
   return `Plan: ${parts.join(', ')} a month. Extra goes to the highest rate first, which costs the least interest.${how}`;
 }
 
+function plusIcon() {
+  const s = h('span.add-icon');
+  s.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>';
+  return s;
+}
+
 function billsList() {
   const billRows = state.bills.map((b) => h('button.item.two', { type: 'button', onclick: () => showBills({ type: 'bill', id: b.id }) },
     h('span.item-main', h('span', b.name), h('small', repeatsText(b))), h('span.amt', fmtPlain(b.cents))));
@@ -1503,9 +1560,9 @@ function billsList() {
     h('div.sheet-top', h('h2', 'Bills and cards')),
     h('p.sub', 'Added to your days on their dates. Card payments wait for you to tick them off.'),
     h('h3.label', 'Bills'),
-    h('div.group', billRows, h('button.item.add', { type: 'button', onclick: () => showBills({ type: 'bill' }) }, 'Add a bill')),
+    h('div.group', billRows, h('button.item.add', { type: 'button', onclick: () => showBills({ type: 'bill' }) }, plusIcon(), 'Add a bill')),
     h('h3.label', 'Cards'),
-    h('div.group', cardRows, h('button.item.add', { type: 'button', onclick: () => showBills({ type: 'card' }) }, 'Add a card')),
+    h('div.group', cardRows, h('button.item.add', { type: 'button', onclick: () => showBills({ type: 'card' }) }, plusIcon(), 'Add a card')),
     state.cards.length && h('div.group', h('label.item', h('span', 'Per month'), monthly)),
     state.cards.length && h('p.fine', cardPlanText()),
   ];
@@ -1678,6 +1735,7 @@ window.addEventListener('pageshow', (ev) => {
 });
 setInterval(() => {
   if (followToday && view !== todayKey() && document.activeElement !== el.input) refresh();
+  else el.dcUpdated.textContent = updatedText(state.updatedAt);
 }, 60_000);
 
 postDue();

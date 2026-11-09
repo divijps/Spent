@@ -34,7 +34,7 @@
     <button class="round" id="menuBtn" type="button" aria-label="Menu" aria-controls="drawer">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 9.6h13M5.5 14.4h13"/></svg>
     </button>
-    <span class="brand">spent</span>
+    <button class="go-today" id="goToday" type="button" hidden>Go to today</button>
     <button class="round" id="findBtn" type="button" aria-label="Search and past days">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 3.5 3.5"/></svg>
     </button>
@@ -42,17 +42,22 @@
 
   <main id="main" class="app-layer">
     <div class="page" id="page">
-      <button class="go-today" id="goToday" type="button" hidden>Go to today</button>
-      <div class="head">
-        <h1><button class="title" id="title" type="button" aria-expanded="false" aria-controls="strip">Today</button></h1>
-        <div class="sub-row">
-          <p class="sub" id="sub"></p>
-          <p class="tip" id="tip" hidden>
-            <span class="tip-dot" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 4v8M4.5 8.5 8 12l3.5-3.5"/></svg></span>
-            Tap an expense for details
-          </p>
-        </div>
-      </div>
+      <h1 class="vh" id="dayName">Today</h1>
+      <button class="daycard calm" id="title" type="button" aria-expanded="false" aria-controls="strip" aria-describedby="dayName">
+        <span class="dc-bg" aria-hidden="true"><span class="dc-glow"></span></span>
+        <span class="dc-top">
+          <span class="dc-day"><span id="dcDay">Today</span><svg class="dc-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 10l4.5 4.5 4.5-4.5"/></svg></span>
+          <span class="dc-status" id="dcStatus" hidden></span>
+        </span>
+        <span class="dc-bottom">
+          <span class="dc-amount"><b id="dcAmount">$0</b><small id="dcLabel">Nothing yet</small></span>
+          <span class="dc-updated" id="dcUpdated"></span>
+        </span>
+      </button>
+      <p class="tip" id="tip" hidden>
+        <span class="tip-dot" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 4v8M4.5 8.5 8 12l3.5-3.5"/></svg></span>
+        Tap an expense for details
+      </p>
 
       <div class="strip" id="strip" hidden>
         <div class="strip-days" id="stripDays"></div>
@@ -181,7 +186,7 @@
     </div>
   </section>
 
-  <section class="sheet tall" id="billsSheet" role="dialog" aria-modal="true" aria-label="Bills and cards" aria-hidden="true" inert>
+  <section class="sheet" id="billsSheet" role="dialog" aria-modal="true" aria-label="Bills and cards" aria-hidden="true" inert>
     <div class="sheet-grab" aria-hidden="true"></div>
     <div class="sheet-body" id="billsBody"></div>
   </section>

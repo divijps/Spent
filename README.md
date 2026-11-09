@@ -21,8 +21,15 @@ A tiny daily money log. Write what you spent, see the day add up. Made to live o
 - Your usual entries show up as quick picks under the field. Tap one to log it again.
 - Tap a line for its details: what share of the day's limit it took, how often you've bought it this month,
   and a shortcut to every past one. Edit the text at the top to change it; delete from the ••• menu (with undo).
-- Tap the date for a row of days. **Go to today** brings you back. Swiping sideways between days works too.
+- Tap the card at the top for a row of days. **Go to today** appears at the top when you're on another day.
+  Swiping sideways between days works too.
 - The ☰ menu has Today, History, Month, Bills and cards, Settings and Save a backup.
+
+## The card at the top
+
+The day, what went out, and when you last changed anything. Its colour is how the month is going:
+green when you're on track, amber when your pace would run out before the month ends, red once you're over.
+It stays silver (graphite in dark mode) until you set a budget.
 
 ## The bar at the bottom
 
