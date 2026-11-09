@@ -21,7 +21,7 @@
 </head>
 <body>
   <header class="topbar">
-    <button class="round" id="menuBtn" type="button" aria-label="Budget, currency and backups">
+    <button class="round" id="menuBtn" type="button" aria-label="Budget, bills, cards and backups">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.75h12M6 14.25h12"/></svg>
     </button>
     <button class="round" id="findBtn" type="button" aria-label="Search and past days">
@@ -31,13 +31,8 @@
 
   <main id="main">
     <div class="page" id="page">
-      <div class="head">
-        <div>
-          <h1 id="title">Today</h1>
-          <p class="sub" id="sub">Nothing yet</p>
-        </div>
-        <button class="pill" id="todayBtn" type="button" hidden>Today</button>
-      </div>
+      <h1><button class="title" id="title" type="button">Today</button></h1>
+      <p class="sub" id="sub">Nothing yet</p>
 
       <ul class="list" id="list"></ul>
 
@@ -51,16 +46,10 @@
     </div>
   </main>
 
-  <button class="card" id="card" type="button" aria-label="Open the month overview">
+  <button class="card" id="card" type="button" aria-label="Open the month">
     <span class="grab" aria-hidden="true"></span>
-    <span class="stat">
-      <b id="cDay">$0</b><small id="cDayLabel">today’s total</small>
-    </span>
-    <span class="stats">
-      <span class="stat"><b id="cWeek">$0</b><small>week</small></span>
-      <span class="stat"><b id="cMonth">$0</b><small>month</small></span>
-      <span class="stat"><b id="cThird">$0</b><small id="cThirdLabel">per day</small></span>
-    </span>
+    <span class="stat"><b id="cMain">$0</b><small id="cMainLabel"></small></span>
+    <span class="stats" id="cStats"></span>
   </button>
 
   <div class="scrim" id="scrim"></div>
@@ -75,16 +64,22 @@
           <button type="button" id="mNext" aria-label="Next month"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
         </div>
       </div>
-      <p class="big" id="mTotal">$0</p>
-      <p class="sub" id="mSub">spent this month</p>
+      <p class="big" id="mBig">$0</p>
+      <p class="sub" id="mSub"></p>
 
       <div class="budget" id="mBudget" hidden>
-        <div class="meter"><i id="mMeter"></i></div>
-        <div class="meter-row"><span id="mLeft"></span><span id="mDaily"></span></div>
+        <div class="meter"><i class="fixed" id="mFixed"></i><i id="mFlex"></i></div>
+        <div class="meter-row"><span id="mFixedLabel"></span><span id="mFlexLabel"></span></div>
       </div>
+      <button class="cta" id="mSetBudget" type="button" hidden>Set a monthly budget to get a daily limit</button>
+
+      <ul class="insights" id="mInsights"></ul>
 
       <div class="bars" id="mBars"></div>
       <div class="axis"><span id="mAxisStart"></span><span id="mAxisEnd"></span></div>
+
+      <h3 class="label" id="mSoonLabel">Coming up</h3>
+      <ul class="list mini" id="mSoon"></ul>
 
       <h3 class="label" id="mTopLabel">Where it went</h3>
       <ul class="list mini" id="mTop"></ul>
@@ -95,7 +90,7 @@
     <div class="sheet-grab" aria-hidden="true"></div>
     <div class="sheet-body">
       <div class="sheet-top"><h2 id="menuTitle">Spent</h2></div>
-      <p class="sub">Your entries are saved on this phone only. Save a backup now and then.</p>
+      <p class="sub">Everything is saved on this phone only. Save a backup now and then.</p>
 
       <div class="group">
         <label class="item">
@@ -108,6 +103,13 @@
           <select id="currency" class="overlay" aria-label="Currency"></select>
         </label>
       </div>
+      <p class="fine">Everything you can spend in a month, bills included. Your daily limit comes from this.</p>
+
+      <div class="group">
+        <button class="item" type="button" id="billsBtn">
+          <span>Bills and cards</span><span class="value" id="billsCount"></span>
+        </button>
+      </div>
 
       <div class="group">
         <button class="item" type="button" id="exportBtn">Export as spreadsheet (CSV)</button>
@@ -116,15 +118,15 @@
       </div>
 
       <div class="group">
-        <button class="item danger" type="button" id="eraseBtn">Erase all entries</button>
+        <button class="item danger" type="button" id="eraseBtn">Erase everything</button>
       </div>
       <input class="vh" type="file" id="restoreFile" accept="application/json,.json" tabindex="-1" aria-hidden="true">
-
-      <p class="fine">
-        Write what it was and what it cost, like “coffee 5.50”. Put + before money coming in, like “+2400 invoice”.
-        Tap a line to change or delete it. Swipe sideways to move between days.
-      </p>
     </div>
+  </section>
+
+  <section class="sheet tall" id="billsSheet" role="dialog" aria-modal="true" aria-label="Bills and cards" aria-hidden="true" inert>
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-body" id="billsBody"></div>
   </section>
 
   <section class="sheet tall" id="findSheet" role="dialog" aria-modal="true" aria-label="Search and past days" aria-hidden="true" inert>

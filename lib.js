@@ -153,10 +153,15 @@ export function fmtMoney(cents, currency = 'USD', { round = false } = {}) {
 
 /* ---------- sums and summaries ---------- */
 
+/** Everyday spending: not income, not a bill or card payment. */
+export const isFlex = (e) => !e.kind && !e.income;
+
+/** Money out and in. Card payments still waiting to be made don't count yet. */
 export function totals(list) {
   let out = 0;
   let inn = 0;
   for (const e of list) {
+    if (e.due) continue;
     if (e.income) inn += e.cents;
     else out += e.cents;
   }
@@ -207,7 +212,108 @@ export function suggest(entries, query = '', limit = 3, now = Date.now()) {
   return list.slice(0, limit);
 }
 
+/** Everyday things bought at least `minCount` times between two days, most frequent first. */
+export function habits(entries, from, to, minCount = 3) {
+  return groupByName(entries.filter((e) => isFlex(e) && e.date >= from && e.date <= to))
+    .filter((g) => g.count >= minCount)
+    .map((g) => ({ ...g, avg: Math.round(g.cents / g.count) }))
+    .sort((a, b) => b.count - a.count || b.cents - a.cents);
+}
+
+/* ---------- repeating bills ---------- */
+
+/** n-th date of { start, every: 'week' | 'month' | 'year' }. The 31st falls back to the month's last day. */
+export function nth(rule, n) {
+  if (rule.every === 'week') return addDays(rule.start, 7 * n);
+  const s = parseKey(rule.start);
+  const total = s.getMonth() + (rule.every === 'year' ? 12 * n : n);
+  const y = s.getFullYear() + Math.floor(total / 12);
+  const m = ((total % 12) + 12) % 12;
+  const last = new Date(y, m + 1, 0).getDate();
+  return keyOf(new Date(y, m, Math.min(s.getDate(), last)));
+}
+
+/** Dates a rule lands on between `from` and `to`, both included. */
+export function occurrences(rule, from, to) {
+  const out = [];
+  if (!rule?.start || from > to) return out;
+  for (let n = 0; n < 5000; n += 1) {
+    const d = nth(rule, n);
+    if (d > to) break;
+    if (d >= from) out.push(d);
+  }
+  return out;
+}
+
+export const monthlyCost = (b) =>
+  b.every === 'week' ? Math.round((b.cents * 52) / 12) : b.every === 'year' ? Math.round(b.cents / 12) : b.cents;
+
+/* ---------- credit cards ---------- */
+
+/** The card's minimum, or a typical one (1% of the balance plus a month's interest, at least 25). */
+export function minPayment(card) {
+  if (!(card.balance > 0)) return 0;
+  const typical = Math.max(2500, Math.round(card.balance * 0.01 + (card.balance * card.apr) / 1200));
+  return Math.min(card.balance, card.min > 0 ? card.min : typical);
+}
+
+/**
+ * Splits a monthly amount across cards: every minimum first, then everything left
+ * to the highest interest rate (the avalanche method, which costs the least interest).
+ */
+export function allocate(cards, amount) {
+  const pays = new Map();
+  let left = amount;
+  for (const c of cards) {
+    const p = minPayment(c);
+    if (p > 0) {
+      pays.set(c.id, p);
+      left -= p;
+    }
+  }
+  const byRate = cards.filter((c) => c.balance > 0).sort((a, b) => b.apr - a.apr || a.balance - b.balance);
+  for (const c of byRate) {
+    if (left <= 0) break;
+    const p = Math.min(c.balance - (pays.get(c.id) || 0), left);
+    if (p > 0) {
+      pays.set(c.id, (pays.get(c.id) || 0) + p);
+      left -= p;
+    }
+  }
+  return pays;
+}
+
+/** How many months until every card is paid off at `monthly` a month, and the interest on the way. */
+export function payoff(cards, monthly, limit = 600) {
+  const bal = cards.filter((c) => c.balance > 0).map((c) => ({ ...c }));
+  const minimums = bal.reduce((s, c) => s + minPayment(c), 0);
+  const pay = Math.max(monthly || 0, minimums);
+  let interest = 0;
+  let months = 0;
+  while (bal.some((c) => c.balance > 0)) {
+    if (months >= limit) return { months: Infinity, interest, pay, minimums };
+    const pays = allocate(bal, pay);
+    for (const c of bal) {
+      c.balance -= pays.get(c.id) || 0;
+      if (c.balance > 0) {
+        const i = Math.round((c.balance * c.apr) / 1200);
+        c.balance += i;
+        interest += i;
+      }
+    }
+    months += 1;
+  }
+  return { months, interest, pay, minimums };
+}
+
 /* ---------- import / export ---------- */
+
+const entryType = (e) => {
+  if (e.income) return 'income';
+  if (e.kind === 'bill') return 'bill';
+  if (e.kind === 'card') return e.due ? 'card payment (not paid yet)' : 'card payment';
+  return 'expense';
+};
 
 export function toCSV(entries) {
   const cell = (s) => {
@@ -217,7 +323,7 @@ export function toCSV(entries) {
   };
   const rows = [...entries]
     .sort((a, b) => a.date.localeCompare(b.date) || a.at - b.at)
-    .map((e) => [e.date, cell(e.name), (e.cents / 100).toFixed(2), e.income ? 'income' : 'expense'].join(','));
+    .map((e) => [e.date, cell(e.name), (e.cents / 100).toFixed(2), entryType(e)].join(','));
   return `${['date,name,amount,type', ...rows].join('\n')}\n`;
 }
 
@@ -230,12 +336,53 @@ export function sanitizeEntry(raw) {
   if (!(cents > 0) || cents > 99_999_999_999) return null;
   const income = raw.income === true || raw.type === 'income';
   const name = String(raw.name ?? '').trim().slice(0, 140) || (income ? 'Income' : 'Expense');
-  return {
-    id: typeof raw.id === 'string' && raw.id ? raw.id.slice(0, 40) : uid(),
+  const e = {
+    id: cleanId(raw.id),
     date,
     name,
     cents,
     income,
     at: Number.isFinite(raw.at) ? raw.at : parseKey(date).getTime(),
+  };
+  if (!income && (raw.kind === 'bill' || raw.kind === 'card')) {
+    e.kind = raw.kind;
+    e.ref = String(raw.ref ?? '').slice(0, 40);
+    if (raw.kind === 'card' && raw.due === true) e.due = true;
+  }
+  return e;
+}
+
+const cleanId = (id) => (typeof id === 'string' && id ? id.slice(0, 40) : uid());
+const isDay = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+/** { id, name, cents, start, every, last } — `last` is the latest date already added to the log. */
+export function sanitizeBill(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = String(raw.name ?? '').trim().slice(0, 60);
+  if (!name || !Number.isInteger(raw.cents) || raw.cents <= 0 || !isDay(raw.start)) return null;
+  return {
+    id: cleanId(raw.id),
+    name,
+    cents: raw.cents,
+    start: raw.start,
+    every: ['week', 'month', 'year'].includes(raw.every) ? raw.every : 'month',
+    last: isDay(raw.last) ? raw.last : null,
+  };
+}
+
+/** { id, name, balance, apr, min, start, last } — due every month on the start date's day. */
+export function sanitizeCard(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = String(raw.name ?? '').trim().slice(0, 60);
+  const apr = Number(raw.apr);
+  if (!name || !Number.isInteger(raw.balance) || raw.balance < 0 || !isDay(raw.start)) return null;
+  return {
+    id: cleanId(raw.id),
+    name,
+    balance: raw.balance,
+    apr: Number.isFinite(apr) && apr >= 0 && apr < 100 ? apr : 0,
+    min: Number.isInteger(raw.min) && raw.min > 0 ? raw.min : 0,
+    start: raw.start,
+    last: isDay(raw.last) ? raw.last : null,
   };
 }

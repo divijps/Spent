@@ -167,31 +167,18 @@ svg {
   padding: calc(env(safe-area-inset-top) + 88px) var(--gutter) calc(var(--card-bottom) + 132px);
 }
 
-.head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+.title {
+  font-weight: 600;
+  cursor: default;
 }
 
-.head h1 { font-weight: 600; }
+.title.away { cursor: pointer; }
 
 .sub {
   margin-top: 2px;
   color: var(--muted);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-}
-
-.pill {
-  flex: none;
-  margin-top: -2px;
-  padding: 7px 14px;
-  border-radius: 999px;
-  font-size: 15px;
-  font-weight: 500;
-  background: var(--raised);
-  box-shadow: var(--shadow-btn);
 }
 
 .list {
@@ -213,7 +200,7 @@ svg {
 }
 
 .row .name {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -222,9 +209,32 @@ svg {
 
 .amt {
   flex: none;
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+
+.rep {
+  flex: none;
+  display: grid;
+  margin-left: -9px;
+  color: var(--muted);
+}
+
+.rep svg { width: 13px; height: 13px; stroke-width: 1.6; }
+
+/* a card payment waiting to be made */
+.tick {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-right: -4px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.75px var(--ink);
+  transition: transform .15s var(--ease);
+}
+
+.tick:active { transform: scale(.88); }
 
 .row.new { animation: row-in .36s var(--ease); }
 
@@ -356,10 +366,15 @@ svg {
 
 .card small {
   display: block;
+  max-width: 118px;
   font-size: 14px;
   color: var(--muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+
+.card.alert .stats .stat:last-child small { color: var(--ink); }
 
 .stats { display: flex; gap: 16px; }
 
@@ -475,6 +490,7 @@ body.sheet-open .card {
 .budget { margin-top: 22px; }
 
 .meter {
+  display: flex;
   height: 6px;
   border-radius: 3px;
   overflow: hidden;
@@ -485,9 +501,44 @@ body.sheet-open .card {
   display: block;
   width: 0;
   height: 100%;
-  border-radius: inherit;
   background: var(--ink);
   transition: width .6s var(--ease-sheet);
+}
+
+.meter i.fixed { background: var(--muted); }
+
+.meter-row span:not(:empty)::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 6px 1px 0;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.meter-row span:first-child::before { background: var(--muted); }
+
+.insights {
+  list-style: none;
+  display: grid;
+  gap: 10px;
+  margin: 22px 0 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--well);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.cta {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--well);
+  font-weight: 500;
 }
 
 .meter-row {
@@ -556,13 +607,13 @@ body.sheet-open .card {
 
 .mini .count {
   flex: none;
-  min-width: 34px;
+  margin-left: auto;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
-.mini .amt { min-width: 64px; }
+.mini .amt { min-width: 64px; margin-left: 0; }
 
 .note {
   padding: 10px 0;
@@ -625,6 +676,48 @@ body.sheet-open .card {
 }
 
 .item.danger { color: var(--danger); }
+
+.item.two { min-height: 62px; padding-top: 9px; padding-bottom: 9px; }
+
+.item-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.item-main small {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.item input[type="date"] {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+}
+
+.item input[type="date"]::-webkit-date-and-time-value { text-align: right; }
+
+.primary {
+  display: block;
+  width: 100%;
+  height: 50px;
+  margin-top: 20px;
+  border-radius: 14px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--ink);
+}
+
+.primary:active { opacity: .8; }
+
+.link {
+  font-weight: 500;
+  color: var(--muted);
+  padding: 8px 0 8px 12px;
+}
 
 .fine {
   margin: 20px 0 0;
@@ -746,3 +839,5 @@ body.sheet-open .card {
     transition-duration: .01ms !important;
   }
 }
+
+.insights b { font-weight: 600; }

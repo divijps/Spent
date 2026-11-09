@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseEntry, toNumber, editText, fmtPlain, fmtMoney, weekRange, addDays, addMonths,
-  daysInMonth, totals, groupByName, suggest, toCSV, sanitizeEntry,
+  daysInMonth, totals, groupByName, suggest, toCSV, sanitizeEntry, sanitizeBill, sanitizeCard,
+  nth, occurrences, monthlyCost, minPayment, allocate, payoff, habits, isFlex,
 } from '../lib.js';
 
 const ok = (text, name, cents, income = false) => {
@@ -140,4 +141,82 @@ test('sanitizing restored entries', () => {
   assert.equal(e.cents, 320);
   assert.equal(e.income, true);
   assert.ok(e.id);
+});
+
+test('repeating dates', () => {
+  const rent = { start: '2026-01-31', every: 'month' };
+  assert.deepEqual([0, 1, 2, 3].map((n) => nth(rent, n)), ['2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30']);
+  assert.equal(nth({ start: '2028-02-29', every: 'year' }, 1), '2029-02-28');
+  assert.deepEqual(occurrences({ start: '2026-11-03', every: 'week' }, '2026-11-08', '2026-11-30'),
+    ['2026-11-10', '2026-11-17', '2026-11-24']);
+  assert.deepEqual(occurrences({ start: '2026-11-01', every: 'month' }, '2026-11-02', '2027-01-15'),
+    ['2026-12-01', '2027-01-01']);
+  assert.deepEqual(occurrences({ start: '2026-12-01', every: 'month' }, '2026-11-01', '2026-11-30'), []);
+  assert.equal(monthlyCost({ cents: 1200, every: 'year' }), 100);
+  assert.equal(monthlyCost({ cents: 1000, every: 'week' }), 4333);
+});
+
+const cards = [
+  { id: 'amex', balance: 320000, apr: 24.9, min: 0 },
+  { id: 'chase', balance: 110000, apr: 19.9, min: 3500 },
+];
+
+test('minimum payments', () => {
+  assert.equal(minPayment(cards[0]), 3200 + 6640); // 1% + a month of interest
+  assert.equal(minPayment(cards[1]), 3500);
+  assert.equal(minPayment({ balance: 1000, apr: 20, min: 0 }), 1000); // never more than owed
+  assert.equal(minPayment({ balance: 0, apr: 20, min: 2500 }), 0);
+});
+
+test('avalanche: minimums first, the rest to the highest rate', () => {
+  const pays = allocate(cards, 60000);
+  assert.equal(pays.get('chase'), 3500);
+  assert.equal(pays.get('amex'), 60000 - 3500);
+  const tiny = allocate(cards, 1000); // below the minimums: still pays the minimums
+  assert.equal(tiny.get('chase'), 3500);
+  assert.equal(tiny.get('amex'), 9840);
+  const lots = allocate(cards, 10_000_000); // never more than owed
+  assert.equal(lots.get('amex') + lots.get('chase'), 430000);
+});
+
+test('payoff', () => {
+  const p = payoff(cards, 60000);
+  assert.ok(p.months > 6 && p.months < 12, `months ${p.months}`);
+  assert.ok(p.interest > 0);
+  const faster = payoff(cards, 70000);
+  assert.ok(faster.months <= p.months && faster.interest < p.interest);
+  assert.equal(payoff([{ id: 'x', balance: 100000, apr: 30, min: 1000 }], 1000).months, Infinity); // interest > payment
+  assert.equal(payoff([], 50000).months, 0);
+});
+
+test('bills and card payments are kept apart from everyday spending', () => {
+  const list = [
+    { date: '2026-11-01', name: 'Rent', cents: 240000, kind: 'bill' },
+    { date: '2026-11-02', name: 'Amex payment', cents: 52000, kind: 'card', due: true },
+    { date: '2026-11-02', name: 'Coffee', cents: 550 },
+  ];
+  assert.deepEqual(totals(list), { out: 240550, inn: 0 }); // unpaid card payment not counted yet
+  assert.deepEqual(list.filter(isFlex).map((e) => e.name), ['Coffee']);
+  const csv = toCSV(list.map((e, i) => ({ ...e, at: i })));
+  assert.match(csv, /Amex payment,520\.00,card payment \(not paid yet\)/);
+  assert.match(csv, /Rent,2400\.00,bill/);
+});
+
+test('habits', () => {
+  const list = [1, 2, 3, 4].map((d) => ({ date: `2026-11-0${d}`, name: 'Coffee', cents: 500, at: d }))
+    .concat([{ date: '2026-11-02', name: 'Rent', cents: 9000, kind: 'bill', at: 9 }]);
+  const h = habits(list, '2026-11-01', '2026-11-30');
+  assert.equal(h.length, 1);
+  assert.deepEqual([h[0].name, h[0].count, h[0].avg], ['Coffee', 4, 500]);
+});
+
+test('sanitizing bills, cards and their entries', () => {
+  assert.equal(sanitizeBill({ name: 'Rent', cents: 240000, start: 'x' }), null);
+  const b = sanitizeBill({ name: ' Rent ', cents: 240000, start: '2026-12-01', every: 'fortnight' });
+  assert.deepEqual([b.name, b.every, b.last], ['Rent', 'month', null]);
+  const c = sanitizeCard({ name: 'Amex', balance: 320000, apr: '24.9', start: '2026-11-12' });
+  assert.deepEqual([c.apr, c.min], [24.9, 0]);
+  const e = sanitizeEntry({ date: '2026-11-12', name: 'Amex payment', cents: 52000, kind: 'card', ref: 'amex', due: true });
+  assert.deepEqual([e.kind, e.ref, e.due], ['card', 'amex', true]);
+  assert.equal(sanitizeEntry({ date: '2026-11-12', name: 'x', cents: 5, kind: 'weird' }).kind, undefined);
 });
