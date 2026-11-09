@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Spent</title>
+  <meta name="description" content="A tiny daily money log.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Spent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <button class="round" id="menuBtn" type="button" aria-label="Budget, currency and backups">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.75h12M6 14.25h12"/></svg>
+    </button>
+    <button class="round" id="findBtn" type="button" aria-label="Search and past days">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 3.5 3.5"/></svg>
+    </button>
+  </header>
+
+  <main id="main">
+    <div class="page" id="page">
+      <div class="head">
+        <div>
+          <h1 id="title">Today</h1>
+          <p class="sub" id="sub">Nothing yet</p>
+        </div>
+        <button class="pill" id="todayBtn" type="button" hidden>Today</button>
+      </div>
+
+      <ul class="list" id="list"></ul>
+
+      <form class="add" id="form" autocomplete="off">
+        <input id="input" type="text" placeholder="Write an expense…" enterkeyhint="enter"
+          autocapitalize="sentences" autocomplete="off" spellcheck="false"
+          aria-label="New entry, for example coffee 5.50">
+      </form>
+      <div class="chips" id="chips"></div>
+      <p class="hint" id="hint" aria-live="polite"></p>
+    </div>
+  </main>
+
+  <button class="card" id="card" type="button" aria-label="Open the month overview">
+    <span class="grab" aria-hidden="true"></span>
+    <span class="stat">
+      <b id="cDay">$0</b><small id="cDayLabel">today’s total</small>
+    </span>
+    <span class="stats">
+      <span class="stat"><b id="cWeek">$0</b><small>week</small></span>
+      <span class="stat"><b id="cMonth">$0</b><small>month</small></span>
+      <span class="stat"><b id="cThird">$0</b><small id="cThirdLabel">per day</small></span>
+    </span>
+  </button>
+
+  <div class="scrim" id="scrim"></div>
+
+  <section class="sheet" id="monthSheet" role="dialog" aria-modal="true" aria-labelledby="mName" aria-hidden="true" inert>
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <div class="sheet-top">
+        <h2 id="mName">Month</h2>
+        <div class="arrows">
+          <button type="button" id="mPrev" aria-label="Previous month"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
+          <button type="button" id="mNext" aria-label="Next month"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
+        </div>
+      </div>
+      <p class="big" id="mTotal">$0</p>
+      <p class="sub" id="mSub">spent this month</p>
+
+      <div class="budget" id="mBudget" hidden>
+        <div class="meter"><i id="mMeter"></i></div>
+        <div class="meter-row"><span id="mLeft"></span><span id="mDaily"></span></div>
+      </div>
+
+      <div class="bars" id="mBars"></div>
+      <div class="axis"><span id="mAxisStart"></span><span id="mAxisEnd"></span></div>
+
+      <h3 class="label" id="mTopLabel">Where it went</h3>
+      <ul class="list mini" id="mTop"></ul>
+    </div>
+  </section>
+
+  <section class="sheet" id="menuSheet" role="dialog" aria-modal="true" aria-labelledby="menuTitle" aria-hidden="true" inert>
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <div class="sheet-top"><h2 id="menuTitle">Spent</h2></div>
+      <p class="sub">Your entries are saved on this phone only. Save a backup now and then.</p>
+
+      <div class="group">
+        <label class="item">
+          <span>Monthly budget</span>
+          <input id="budget" type="text" inputmode="decimal" placeholder="Not set" enterkeyhint="done" autocomplete="off">
+        </label>
+        <label class="item">
+          <span>Currency</span>
+          <span class="value" id="currencyValue">USD</span>
+          <select id="currency" class="overlay" aria-label="Currency"></select>
+        </label>
+      </div>
+
+      <div class="group">
+        <button class="item" type="button" id="exportBtn">Export as spreadsheet (CSV)</button>
+        <button class="item" type="button" id="backupBtn">Save a backup</button>
+        <button class="item" type="button" id="restoreBtn">Restore a backup</button>
+      </div>
+
+      <div class="group">
+        <button class="item danger" type="button" id="eraseBtn">Erase all entries</button>
+      </div>
+      <input class="vh" type="file" id="restoreFile" accept="application/json,.json" tabindex="-1" aria-hidden="true">
+
+      <p class="fine">
+        Write what it was and what it cost, like “coffee 5.50”. Put + before money coming in, like “+2400 invoice”.
+        Tap a line to change or delete it. Swipe sideways to move between days.
+      </p>
+    </div>
+  </section>
+
+  <section class="sheet tall" id="findSheet" role="dialog" aria-modal="true" aria-label="Search and past days" aria-hidden="true" inert>
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <label class="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 3.5 3.5"/></svg>
+        <input id="findInput" type="text" placeholder="Search entries" enterkeyhint="search"
+          autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search entries">
+      </label>
+      <p class="find-sum" id="findSum"></p>
+      <div id="findList"></div>
+    </div>
+  </section>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <span id="toastText"></span>
+    <button type="button" id="toastBtn">Undo</button>
+  </div>
+</body>
+</html>
