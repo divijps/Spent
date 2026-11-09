@@ -1,6 +1,6 @@
 // Offline support: answer from the cache right away, then refresh the cache in the
 // background so the next launch picks up any update.
-const CACHE = 'spent-v4';
+const CACHE = 'spent-v5';
 const SHELL = [
   './',
   './style.css',
