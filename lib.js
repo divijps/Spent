@@ -153,19 +153,21 @@ export function fmtMoney(cents, currency = 'USD', { round = false } = {}) {
 
 /* ---------- sums and summaries ---------- */
 
-/** Everyday spending: not income, not a bill or card payment. */
+/** Everyday spending: not income, not a bill, card payment or money put toward a goal. */
 export const isFlex = (e) => !e.kind && !e.income;
 
-/** Money out and in. Card payments still waiting to be made don't count yet. */
+/** Money out, in, and moved to goals. Payments and transfers still waiting to be made don't count yet. */
 export function totals(list) {
   let out = 0;
   let inn = 0;
+  let saved = 0;
   for (const e of list) {
     if (e.due) continue;
     if (e.income) inn += e.cents;
+    else if (e.kind === 'goal') saved += e.cents;
     else out += e.cents;
   }
-  return { out, inn };
+  return { out, inn, saved };
 }
 
 /** Spending grouped by name (case-insensitive), biggest first. */
@@ -306,12 +308,114 @@ export function payoff(cards, monthly, limit = 600) {
   return { months, interest, pay, minimums };
 }
 
+/* ---------- savings and investing goals ---------- */
+
+/** What a goal still needs; Infinity for one without a target (investing as you go). */
+export const goalLeft = (g) => (g.target > 0 ? Math.max(0, g.target - g.saved) : Infinity);
+
+/** Months from `ym` through the month of `by` ('YYYY-MM'), both counted, at least 1. */
+export function monthsTo(ym, by) {
+  const [y1, m1] = ym.split('-').map(Number);
+  const [y2, m2] = by.split('-').map(Number);
+  return Math.max(1, (y2 - y1) * 12 + (m2 - m1) + 1);
+}
+
+/**
+ * Shares a monthly amount between goals, in whole dollars. Goals with a date first get what
+ * keeps them on time (soonest first); the rest is split evenly. No goal gets more than it needs.
+ */
+export function shareGoals(goals, amount, ym) {
+  const pays = new Map();
+  let left = Math.floor(Math.max(0, amount) / 100) * 100;
+  const room = (g) => goalLeft(g) - (pays.get(g.id) || 0);
+  const give = (g, cents) => {
+    const c = Math.min(cents, room(g), left);
+    if (c > 0) {
+      pays.set(g.id, (pays.get(g.id) || 0) + c);
+      left -= c;
+    }
+  };
+  const open = goals.filter((g) => goalLeft(g) > 0);
+  const dated = open.filter((g) => g.by && g.target > 0).sort((a, b) => a.by.localeCompare(b.by));
+  for (const g of dated) give(g, Math.ceil(goalLeft(g) / monthsTo(ym, g.by) / 100) * 100);
+  // the rest goes to goals without a date; if every goal has one, they share it
+  const undated = open.filter((g) => !dated.includes(g));
+  let rest = (undated.length ? undated : open).filter((g) => room(g) > 0);
+  while (left >= 100 && rest.length) {
+    const each = Math.max(100, Math.floor(left / rest.length / 100) * 100);
+    for (const g of rest) give(g, each);
+    rest = rest.filter((g) => room(g) > 0);
+    if (!rest.length && left >= 100) rest = open.filter((g) => room(g) > 0); // undated ones are full
+  }
+  return pays;
+}
+
+/**
+ * One month of the plan. `room` is what the month has for cards and goals, card minimums
+ * included. The minimums are paid first; what's left is split by `saveShare` (0–100, the
+ * percent for goals). A side that can't use all of its share hands the rest to the other.
+ */
+export function splitPlan(cards, goals, room, saveShare, ym) {
+  const minimums = cards.reduce((s, c) => s + minPayment(c), 0);
+  const extra = Math.max(0, room - minimums);
+  const cardsCan = cards.reduce((s, c) => s + Math.max(0, c.balance - minPayment(c)), 0);
+  const goalsCan = goals.reduce((s, g) => s + Math.min(goalLeft(g), 1e12), 0);
+  const share = Math.min(100, Math.max(0, saveShare));
+  let toGoals = Math.min(goalsCan, share === 100 ? extra : Math.floor((extra * share) / 100 / 1000) * 1000);
+  const toCards = Math.min(cardsCan, extra - toGoals);
+  toGoals = Math.min(goalsCan, extra - toCards); // whatever cards can't use
+  const goalPays = shareGoals(goals, toGoals, ym);
+  toGoals = [...goalPays.values()].reduce((s, c) => s + c, 0);
+  return { minimums, extra, toCards, toGoals, cards: allocate(cards, minimums + toCards), goals: goalPays };
+}
+
+/**
+ * Runs the plan forward month by month: when each card is paid off and each goal reached,
+ * counted in months from `ym` (1 = this month). Cards and goals in `paid` have already had
+ * this month's money.
+ */
+export function project(cards, goals, room, saveShare, ym, paid = new Set(), limit = 600) {
+  const cs = cards.filter((c) => c.balance > 0).map((c) => ({ ...c }));
+  const gs = goals.filter((g) => goalLeft(g) > 0).map((g) => ({ ...g }));
+  const cardMonths = new Map();
+  const goalMonths = new Map();
+  let interest = 0;
+  let month = ym;
+  for (let n = 1; n <= limit; n += 1) {
+    const p = splitPlan(cs, gs, room, saveShare, month);
+    for (const c of cs) {
+      if (c.balance <= 0) continue;
+      if (!(n === 1 && paid.has(c.id))) c.balance -= p.cards.get(c.id) || 0;
+      if (c.balance > 0) {
+        const i = Math.round((c.balance * c.apr) / 1200);
+        c.balance += i;
+        interest += i;
+      } else {
+        c.balance = 0;
+        cardMonths.set(c.id, n);
+      }
+    }
+    for (const g of gs) {
+      if (goalMonths.has(g.id) || (n === 1 && paid.has(g.id))) continue;
+      g.saved += p.goals.get(g.id) || 0;
+      if (g.target > 0 && g.saved >= g.target) goalMonths.set(g.id, n);
+    }
+    const cardsLeft = cs.some((c) => c.balance > 0);
+    const goalsLeft = gs.some((g) => g.target > 0 && !goalMonths.has(g.id));
+    if (!cardsLeft && !goalsLeft) break;
+    month = addMonths(month, 1);
+  }
+  const allCards = cs.length ? (cs.every((c) => cardMonths.has(c.id)) ? Math.max(...cardMonths.values()) : Infinity) : 0;
+  return { cardMonths, goalMonths, cardsDone: allCards, interest };
+}
+
 /* ---------- import / export ---------- */
 
 const entryType = (e) => {
   if (e.income) return 'income';
   if (e.kind === 'bill') return 'bill';
   if (e.kind === 'card') return e.due ? 'card payment (not paid yet)' : 'card payment';
+  if (e.kind === 'goal') return e.due ? 'to a goal (not moved yet)' : 'to a goal';
   return 'expense';
 };
 
@@ -344,10 +448,10 @@ export function sanitizeEntry(raw) {
     income,
     at: Number.isFinite(raw.at) ? raw.at : parseKey(date).getTime(),
   };
-  if (!income && (raw.kind === 'bill' || raw.kind === 'card')) {
+  if (!income && ['bill', 'card', 'goal'].includes(raw.kind)) {
     e.kind = raw.kind;
     e.ref = String(raw.ref ?? '').slice(0, 40);
-    if (raw.kind === 'card' && raw.due === true) e.due = true;
+    if (raw.kind !== 'bill' && raw.due === true) e.due = true;
   }
   return e;
 }
@@ -370,7 +474,12 @@ export function sanitizeBill(raw) {
   };
 }
 
-/** { id, name, balance, apr, min, start, last } — due every month on the start date's day. */
+const posCents = (n) => (Number.isInteger(n) && n > 0 && n <= 99_999_999_999 ? n : 0);
+
+/**
+ * { id, name, balance, limit, apr, min, start, last, updated } — due every month on the start
+ * date's day. `limit` is the credit limit (0 when not given); `updated` is the day the balance was last set.
+ */
 export function sanitizeCard(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const name = String(raw.name ?? '').trim().slice(0, 60);
@@ -380,8 +489,31 @@ export function sanitizeCard(raw) {
     id: cleanId(raw.id),
     name,
     balance: raw.balance,
+    limit: posCents(raw.limit),
     apr: Number.isFinite(apr) && apr >= 0 && apr < 100 ? apr : 0,
-    min: Number.isInteger(raw.min) && raw.min > 0 ? raw.min : 0,
+    min: posCents(raw.min),
+    start: raw.start,
+    last: isDay(raw.last) ? raw.last : null,
+    updated: isDay(raw.updated) ? raw.updated : null,
+  };
+}
+
+/**
+ * { id, name, kind: 'save' | 'invest', target, saved, by, start, last } — money moves every month
+ * from `start`. `target` 0 means none; `by` is an optional 'YYYY-MM'.
+ */
+export function sanitizeGoal(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = String(raw.name ?? '').trim().slice(0, 60);
+  if (!name || !isDay(raw.start)) return null;
+  const by = typeof raw.by === 'string' ? raw.by.slice(0, 7) : '';
+  return {
+    id: cleanId(raw.id),
+    name,
+    kind: raw.kind === 'invest' ? 'invest' : 'save',
+    target: posCents(raw.target),
+    saved: posCents(raw.saved),
+    by: /^\d{4}-\d{2}$/.test(by) ? by : null,
     start: raw.start,
     last: isDay(raw.last) ? raw.last : null,
   };

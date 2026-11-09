@@ -25,7 +25,9 @@
     <div class="drawer-rule"></div>
     <button class="drawer-item" type="button" data-go="history">History</button>
     <button class="drawer-item" type="button" data-go="month">Month</button>
-    <button class="drawer-item" type="button" data-go="bills">Bills and cards</button>
+    <button class="drawer-item" type="button" data-go="cards">Cards</button>
+    <button class="drawer-item" type="button" data-go="goals">Goals</button>
+    <button class="drawer-item" type="button" data-go="bills">Bills</button>
     <button class="drawer-item" type="button" data-go="settings">Settings</button>
     <button class="pill-btn small" type="button" data-go="backup">Save a backup</button>
   </nav>
@@ -42,22 +44,16 @@
 
   <main id="main" class="app-layer">
     <div class="page" id="page">
-      <h1 class="vh" id="dayName">Today</h1>
-      <button class="daycard calm" id="title" type="button" aria-expanded="false" aria-controls="strip" aria-describedby="dayName">
-        <span class="dc-bg" aria-hidden="true"><span class="dc-glow"></span></span>
-        <span class="dc-top">
-          <span class="dc-day"><span id="dcDay">Today</span><svg class="dc-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 10l4.5 4.5 4.5-4.5"/></svg></span>
-          <span class="dc-status" id="dcStatus" hidden></span>
-        </span>
-        <span class="dc-bottom">
-          <span class="dc-amount"><b id="dcAmount">$0</b><small id="dcLabel">Nothing yet</small></span>
-          <span class="dc-updated" id="dcUpdated"></span>
-        </span>
-      </button>
-      <p class="tip" id="tip" hidden>
-        <span class="tip-dot" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 4v8M4.5 8.5 8 12l3.5-3.5"/></svg></span>
-        Tap an expense for details
-      </p>
+      <div class="head">
+        <h1><button class="title" id="title" type="button" aria-expanded="false" aria-controls="strip">Today</button></h1>
+        <div class="sub-row">
+          <p class="sub" id="sub"></p>
+          <p class="tip" id="tip" hidden>
+            <span class="tip-dot" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 4v8M4.5 8.5 8 12l3.5-3.5"/></svg></span>
+            Tap an expense for details
+          </p>
+        </div>
+      </div>
 
       <div class="strip" id="strip" hidden>
         <div class="strip-days" id="stripDays"></div>
@@ -89,7 +85,7 @@
   <div class="shade" id="shade"></div>
   <div class="scrim" id="scrim"></div>
 
-  <section class="sheet detail" id="entrySheet" role="dialog" aria-modal="true" aria-label="Entry details" aria-hidden="true" inert>
+  <section class="sheet" id="entrySheet" role="dialog" aria-modal="true" aria-label="Entry details" aria-hidden="true" inert>
     <div class="sheet-grab" aria-hidden="true"></div>
     <div class="sheet-body">
       <div class="sheet-top">
@@ -103,8 +99,8 @@
       </div>
       <div class="panel" id="ePanel"></div>
       <div id="eActions"></div>
+      <p class="nudge" id="eNudge" hidden>Tap the text above to change it</p>
     </div>
-    <p class="nudge" id="eNudge" hidden>Tap the text above to change it</p>
   </section>
 
   <section class="sheet" id="monthSheet" role="dialog" aria-modal="true" aria-labelledby="mName" aria-hidden="true" inert>
@@ -142,7 +138,9 @@
       <ul class="panel list mini" id="mTop"></ul>
 
       <div class="group">
-        <button class="item" type="button" id="mBills"><span>Bills and cards</span><span class="chev" aria-hidden="true"></span></button>
+        <button class="item" type="button" id="mCards"><span>Cards</span><span class="chev" aria-hidden="true"></span></button>
+        <button class="item" type="button" id="mGoals"><span>Goals</span><span class="chev" aria-hidden="true"></span></button>
+        <button class="item" type="button" id="mBills"><span>Bills</span><span class="chev" aria-hidden="true"></span></button>
         <button class="item" type="button" id="mSettings"><span>Budget and settings</span><span class="chev" aria-hidden="true"></span></button>
       </div>
     </div>
@@ -164,11 +162,17 @@
           <select id="currency" class="overlay" aria-label="Currency"></select>
         </label>
       </div>
-      <p class="fine">Everything you can spend in a month, bills included. Your daily limit comes from this.</p>
+      <p class="fine">What you have to work with each month, usually your take-home pay. Bills, card payments and goals come out first; the rest becomes your daily limit.</p>
 
       <div class="group">
+        <button class="item" type="button" id="cardsBtn">
+          <span>Cards</span><span class="value" id="cardsCount"></span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <button class="item" type="button" id="goalsBtn">
+          <span>Goals</span><span class="value" id="goalsCount"></span><span class="chev" aria-hidden="true"></span>
+        </button>
         <button class="item" type="button" id="billsBtn">
-          <span>Bills and cards</span><span class="value" id="billsCount"></span><span class="chev" aria-hidden="true"></span>
+          <span>Bills</span><span class="value" id="billsCount"></span><span class="chev" aria-hidden="true"></span>
         </button>
       </div>
 
@@ -186,12 +190,12 @@
     </div>
   </section>
 
-  <section class="sheet" id="billsSheet" role="dialog" aria-modal="true" aria-label="Bills and cards" aria-hidden="true" inert>
+  <section class="sheet" id="stackSheet" role="dialog" aria-modal="true" aria-label="Cards" aria-hidden="true" inert>
     <div class="sheet-grab" aria-hidden="true"></div>
-    <div class="sheet-body" id="billsBody"></div>
+    <div class="sheet-body" id="stackBody"></div>
   </section>
 
-  <section class="sheet tall" id="findSheet" role="dialog" aria-modal="true" aria-label="Search and past days" aria-hidden="true" inert>
+  <section class="sheet" id="findSheet" role="dialog" aria-modal="true" aria-label="Search and past days" aria-hidden="true" inert>
     <div class="sheet-grab" aria-hidden="true"></div>
     <div class="sheet-body">
       <label class="search">

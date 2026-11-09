@@ -5,6 +5,7 @@ import {
   parseEntry, toNumber, editText, fmtPlain, fmtMoney, weekRange, addDays, addMonths,
   daysInMonth, totals, groupByName, suggest, toCSV, sanitizeEntry, sanitizeBill, sanitizeCard,
   nth, occurrences, monthlyCost, minPayment, allocate, payoff, habits, isFlex,
+  goalLeft, monthsTo, shareGoals, splitPlan, project, sanitizeGoal,
 } from '../lib.js';
 
 const ok = (text, name, cents, income = false) => {
@@ -108,7 +109,7 @@ const sample = [
 ];
 
 test('totals and grouping', () => {
-  assert.deepEqual(totals(sample), { out: 5260, inn: 240000 });
+  assert.deepEqual(totals(sample), { out: 5260, inn: 240000, saved: 0 });
   const g = groupByName(sample);
   assert.equal(g.length, 2);
   assert.deepEqual([g[0].name, g[0].count, g[0].cents], ['Groceries', 1, 4210]);
@@ -195,7 +196,7 @@ test('bills and card payments are kept apart from everyday spending', () => {
     { date: '2026-11-02', name: 'Amex payment', cents: 52000, kind: 'card', due: true },
     { date: '2026-11-02', name: 'Coffee', cents: 550 },
   ];
-  assert.deepEqual(totals(list), { out: 240550, inn: 0 }); // unpaid card payment not counted yet
+  assert.deepEqual(totals(list), { out: 240550, inn: 0, saved: 0 }); // unpaid card payment not counted yet
   assert.deepEqual(list.filter(isFlex).map((e) => e.name), ['Coffee']);
   const csv = toCSV(list.map((e, i) => ({ ...e, at: i })));
   assert.match(csv, /Amex payment,520\.00,card payment \(not paid yet\)/);
@@ -219,4 +220,101 @@ test('sanitizing bills, cards and their entries', () => {
   const e = sanitizeEntry({ date: '2026-11-12', name: 'Amex payment', cents: 52000, kind: 'card', ref: 'amex', due: true });
   assert.deepEqual([e.kind, e.ref, e.due], ['card', 'amex', true]);
   assert.equal(sanitizeEntry({ date: '2026-11-12', name: 'x', cents: 5, kind: 'weird' }).kind, undefined);
+});
+
+test('money moved to a goal is saved, not spent', () => {
+  const list = [
+    { date: '2026-11-01', name: 'To Safety net', cents: 15000, kind: 'goal' },
+    { date: '2026-11-01', name: 'To Trip', cents: 5000, kind: 'goal', due: true },
+    { date: '2026-11-01', name: 'Lunch', cents: 1400 },
+  ];
+  assert.deepEqual(totals(list), { out: 1400, inn: 0, saved: 15000 });
+  assert.deepEqual(list.filter(isFlex).map((e) => e.name), ['Lunch']);
+  assert.match(toCSV(list.map((e, i) => ({ ...e, at: i }))), /To Trip,50\.00,to a goal \(not moved yet\)/);
+  const e = sanitizeEntry({ date: '2026-11-01', name: 'To Trip', cents: 5000, kind: 'goal', ref: 'trip', due: true });
+  assert.deepEqual([e.kind, e.ref, e.due], ['goal', 'trip', true]);
+});
+
+const net = { id: 'net', name: 'Safety net', kind: 'save', target: 600000, saved: 120000, by: null };
+const trip = { id: 'trip', name: 'Trip', kind: 'save', target: 240000, saved: 0, by: '2027-04' };
+const fund = { id: 'fund', name: 'Index fund', kind: 'invest', target: 0, saved: 50000, by: null };
+
+test('goals: what is left, months to a date', () => {
+  assert.equal(goalLeft(net), 480000);
+  assert.equal(goalLeft(fund), Infinity);
+  assert.equal(goalLeft({ ...net, saved: 700000 }), 0);
+  assert.equal(monthsTo('2026-11', '2027-04'), 6); // Nov through Apr
+  assert.equal(monthsTo('2026-11', '2026-11'), 1);
+  assert.equal(monthsTo('2026-11', '2026-01'), 1); // past dates still get at least a month
+});
+
+test('goals with a date get what keeps them on time, the rest is shared evenly', () => {
+  const pays = shareGoals([net, trip, fund], 60000, '2026-11');
+  assert.equal(pays.get('trip'), 40000); // 2,400 over 6 months
+  assert.equal(pays.get('net'), 10000);
+  assert.equal(pays.get('fund'), 10000);
+  const tight = shareGoals([net, trip], 25000, '2026-11'); // not enough for the trip: it all goes there
+  assert.deepEqual([tight.get('trip'), tight.get('net')], [25000, undefined]);
+  const capped = shareGoals([{ ...net, saved: 595000 }, fund], 30000, '2026-11'); // net only needs 50
+  assert.deepEqual([capped.get('net'), capped.get('fund')], [5000, 25000]);
+  assert.equal(shareGoals([net], 12345, '2026-11').get('net'), 12300); // whole dollars
+  assert.equal(shareGoals([], 50000, '2026-11').size, 0);
+});
+
+const amex = { id: 'amex', name: 'Amex', balance: 320000, apr: 24.9, min: 0 };
+const chase = { id: 'chase', name: 'Chase', balance: 110000, apr: 19, min: 3500 };
+
+test('the plan: minimums first, then the split', () => {
+  const p = splitPlan([amex, chase], [net], 60000, 30, '2026-11');
+  const mins = minPayment(amex) + minPayment(chase);
+  assert.equal(p.minimums, mins);
+  assert.equal(p.toGoals, Math.floor(((60000 - mins) * 0.3) / 1000) * 1000);
+  assert.equal(p.toCards, 60000 - mins - p.toGoals);
+  assert.equal(p.cards.get('chase'), 3500); // its minimum; the extra goes to Amex, the higher rate
+  assert.equal(p.cards.get('amex') + p.cards.get('chase'), mins + p.toCards);
+  assert.equal(p.goals.get('net'), p.toGoals);
+
+  const allCards = splitPlan([amex, chase], [net], 60000, 0, '2026-11');
+  assert.equal(allCards.toGoals, 0);
+  const allGoals = splitPlan([amex, chase], [net], 60000, 100, '2026-11');
+  assert.equal(allGoals.toCards, 0);
+  assert.equal(allGoals.cards.get('amex'), minPayment(amex)); // minimums are always paid
+
+  const noGoals = splitPlan([amex], [], 60000, 50, '2026-11'); // nothing to save toward: cards get it all
+  assert.equal(noGoals.toCards, 60000 - minPayment(amex));
+  const noDebt = splitPlan([{ ...amex, balance: 0 }], [net], 60000, 10, '2026-11'); // no debt: goals get it all
+  assert.equal(noDebt.toGoals, 60000);
+  const small = splitPlan([{ ...chase, balance: 5000 }], [net], 60000, 0, '2026-11'); // a card that can't take it all
+  assert.equal(small.toCards, 1500);
+  assert.equal(small.toGoals, 60000 - 5000);
+  const tight = splitPlan([amex, chase], [net], 1000, 50, '2026-11'); // below the minimums: still pays them
+  assert.equal(tight.cards.get('chase'), 3500);
+  assert.equal(tight.toGoals, 0);
+});
+
+test('projection: the slider trades card payoff against goals', () => {
+  const debt = project([amex, chase], [net], 80000, 20, '2026-11');
+  const save = project([amex, chase], [net], 80000, 80, '2026-11');
+  assert.ok(Number.isFinite(debt.cardsDone) && debt.cardsDone < save.cardsDone, `${debt.cardsDone} vs ${save.cardsDone}`);
+  assert.ok(save.goalMonths.get('net') < debt.goalMonths.get('net'));
+  assert.ok(debt.interest < save.interest);
+  // once the cards are gone, everything flows to the goal
+  const after = project([{ ...chase, balance: 20000 }], [net], 80000, 0, '2026-11');
+  assert.ok(after.goalMonths.get('net') <= 8, `net in ${after.goalMonths.get('net')}`);
+  // money already moved this month isn't counted twice
+  const paid = project([], [net], 80000, 100, '2026-11', new Set(['net']));
+  assert.equal(paid.goalMonths.get('net'), project([], [net], 80000, 100, '2026-11').goalMonths.get('net') + 1);
+  // a payment below the interest never clears
+  assert.equal(project([{ id: 'x', balance: 100000, apr: 30, min: 1000 }], [], 1000, 0, '2026-11', new Set(), 120).cardsDone, Infinity);
+  assert.equal(project([], [], 50000, 30, '2026-11').cardsDone, 0);
+});
+
+test('sanitizing goals and card limits', () => {
+  const g = sanitizeGoal({ name: ' Trip ', kind: 'travel', target: 240000, saved: -5, by: '2027-04-30', start: '2026-12-01' });
+  assert.deepEqual([g.name, g.kind, g.target, g.saved, g.by, g.last], ['Trip', 'save', 240000, 0, '2027-04', null]);
+  assert.equal(sanitizeGoal({ name: 'x', start: 'soon' }), null);
+  assert.equal(sanitizeGoal({ name: 'Fund', kind: 'invest', start: '2026-12-01', by: 'later' }).by, null);
+  const c = sanitizeCard({ name: 'Amex', balance: 320000, limit: 1200000, apr: 24.9, start: '2026-11-12', updated: '2026-11-08' });
+  assert.deepEqual([c.limit, c.updated], [1200000, '2026-11-08']);
+  assert.equal(sanitizeCard({ name: 'Amex', balance: 0, limit: -4, start: '2026-11-12' }).limit, 0);
 });

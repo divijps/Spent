@@ -1,33 +1,33 @@
 import {
   keyOf, parseKey, addDays, monthOf, addMonths, daysInMonth, monthRange,
   parseEntry, editText, fmtPlain, fmtMoney, totals, groupByName, suggest, habits, isFlex,
-  toCSV, sanitizeEntry, sanitizeBill, sanitizeCard, uid, toNumber,
-  occurrences, monthlyCost, minPayment, allocate, payoff,
+  toCSV, sanitizeEntry, sanitizeBill, sanitizeCard, sanitizeGoal, uid, toNumber,
+  occurrences, monthlyCost, minPayment, allocate, goalLeft, monthsTo, shareGoals, splitPlan, project,
 } from './lib.js';
 
 const STORE = 'spent.v1'; // same key as the first version, so existing entries carry over
 const $ = (id) => document.getElementById(id);
 const el = {
-  main: $('main'), page: $('page'), title: $('title'), goToday: $('goToday'), tip: $('tip'),
-  dayName: $('dayName'), dcDay: $('dcDay'), dcStatus: $('dcStatus'), dcAmount: $('dcAmount'),
-  dcLabel: $('dcLabel'), dcUpdated: $('dcUpdated'),
+  main: $('main'), page: $('page'), title: $('title'), sub: $('sub'), goToday: $('goToday'), tip: $('tip'),
   strip: $('strip'), stripDays: $('stripDays'), stripDone: $('stripDone'),
   list: $('list'), form: $('form'), input: $('input'), chips: $('chips'), hint: $('hint'),
   card: $('card'), cardHint: $('cardHint'), ring: $('ring'), ringArc: $('ringArc'),
   cMain: $('cMain'), cMainLabel: $('cMainLabel'), cStats: $('cStats'),
   menuBtn: $('menuBtn'), findBtn: $('findBtn'), scrim: $('scrim'), drawer: $('drawer'), shade: $('shade'),
   entrySheet: $('entrySheet'), eText: $('eText'), eMore: $('eMore'), ePop: $('ePop'), eDelete: $('eDelete'),
-  ePanel: $('ePanel'), eActions: $('eActions'), eNudge: $('eNudge'), mBills: $('mBills'), mSettings: $('mSettings'),
+  ePanel: $('ePanel'), eActions: $('eActions'), eNudge: $('eNudge'),
+  mCards: $('mCards'), mGoals: $('mGoals'), mBills: $('mBills'), mSettings: $('mSettings'),
   monthSheet: $('monthSheet'), mName: $('mName'), mPrev: $('mPrev'), mNext: $('mNext'),
   mBig: $('mBig'), mSub: $('mSub'), mBudget: $('mBudget'), mFixed: $('mFixed'), mFlex: $('mFlex'),
   mFixedLabel: $('mFixedLabel'), mFlexLabel: $('mFlexLabel'), mSetBudget: $('mSetBudget'),
   mInsights: $('mInsights'), mBars: $('mBars'), mAxisStart: $('mAxisStart'), mAxisEnd: $('mAxisEnd'),
   mSoonLabel: $('mSoonLabel'), mSoon: $('mSoon'), mTopLabel: $('mTopLabel'), mTop: $('mTop'),
   menuSheet: $('menuSheet'), budget: $('budget'), currency: $('currency'), currencyValue: $('currencyValue'),
-  billsBtn: $('billsBtn'), billsCount: $('billsCount'),
+  billsBtn: $('billsBtn'), billsCount: $('billsCount'), cardsBtn: $('cardsBtn'), cardsCount: $('cardsCount'),
+  goalsBtn: $('goalsBtn'), goalsCount: $('goalsCount'),
   exportBtn: $('exportBtn'), backupBtn: $('backupBtn'), restoreBtn: $('restoreBtn'),
   restoreFile: $('restoreFile'), eraseBtn: $('eraseBtn'),
-  billsSheet: $('billsSheet'), billsBody: $('billsBody'),
+  stackSheet: $('stackSheet'), stackBody: $('stackBody'),
   findSheet: $('findSheet'), findInput: $('findInput'), findSum: $('findSum'), findList: $('findList'),
   toast: $('toast'), toastText: $('toastText'), toastBtn: $('toastBtn'),
 };
@@ -40,7 +40,7 @@ function h(tag, ...parts) {
   const [name, ...classes] = tag.split('.');
   const node = document.createElement(name);
   if (classes.length) node.className = classes.join(' ');
-  for (const p of parts.flat()) {
+  for (const p of parts.flat(Infinity)) {
     if (p == null || p === false || p === '') continue;
     if (p instanceof Node) node.append(p);
     else if (typeof p !== 'object') node.append(String(p));
@@ -66,16 +66,27 @@ function repeatIcon() {
 /* ---------------- storage ---------------- */
 
 const blank = () => ({
-  v: 2,
+  v: 3,
   entries: [],
   bills: [],
   cards: [],
-  settings: { currency: 'USD', budget: null, cardMonthly: null },
+  goals: [],
+  // plan: what goes to cards and goals each month (null: Auto); saveShare: percent of the extra for goals
+  settings: { currency: 'USD', budget: null, plan: null, saveShare: 30 },
   ui: { tipSeen: false, cardOpens: 0, edited: false },
   updatedAt: null, // when entries, bills, cards or settings last changed
 });
 const arr = (x) => (Array.isArray(x) ? x : []);
 const posInt = (n) => Number.isInteger(n) && n > 0;
+
+function readSettings(into, st) {
+  if (!st || typeof st !== 'object') return;
+  if (typeof st.currency === 'string' && st.currency) into.currency = st.currency;
+  if (posInt(st.budget)) into.budget = st.budget;
+  if (posInt(st.plan)) into.plan = st.plan;
+  else if (posInt(st.cardMonthly)) into.plan = st.cardMonthly; // the old "toward cards per month"
+  if (Number.isInteger(st.saveShare) && st.saveShare >= 0 && st.saveShare <= 100) into.saveShare = st.saveShare;
+}
 
 function load() {
   const s = blank();
@@ -85,10 +96,8 @@ function load() {
     s.entries = arr(raw.entries).map(sanitizeEntry).filter(Boolean);
     s.bills = arr(raw.bills).map(sanitizeBill).filter(Boolean);
     s.cards = arr(raw.cards).map(sanitizeCard).filter(Boolean);
-    const st = raw.settings || {};
-    if (typeof st.currency === 'string' && st.currency) s.settings.currency = st.currency;
-    if (posInt(st.budget)) s.settings.budget = st.budget;
-    if (posInt(st.cardMonthly)) s.settings.cardMonthly = st.cardMonthly;
+    s.goals = arr(raw.goals).map(sanitizeGoal).filter(Boolean);
+    readSettings(s.settings, raw.settings);
     if (raw.ui?.tipSeen === true) s.ui.tipSeen = true;
     if (raw.ui?.edited === true) s.ui.edited = true;
     if (Number.isInteger(raw.ui?.cardOpens)) s.ui.cardOpens = raw.ui.cardOpens;
@@ -100,7 +109,7 @@ function load() {
 
 let state = load();
 
-const dataKey = () => JSON.stringify([state.entries, state.bills, state.cards, state.settings]);
+const dataKey = () => JSON.stringify([state.entries, state.bills, state.cards, state.goals, state.settings]);
 let lastData = dataKey();
 
 /* `quiet` is for changes the app makes on its own (bills landing on their dates),
@@ -164,6 +173,15 @@ function shortDay(k) {
     : { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
 }
 
+/** 'Dec' this year, 'Jul 2027' after */
+function monthYear(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return fmt(y === thisYear() ? { month: 'short' } : { month: 'short', year: 'numeric' }).format(new Date(y, m - 1, 1));
+}
+
+/** The month `n` months into the plan (1 = this month), as 'Dec' or 'Jul 2027'. */
+const inMonths = (n) => monthYear(addMonths(monthOf(todayKey()), n - 1));
+
 function monthLabel(ym) {
   const [y, m] = ym.split('-').map(Number);
   return fmt(y === thisYear() ? { month: 'long' } : { month: 'long', year: 'numeric' }).format(new Date(y, m - 1, 1));
@@ -193,14 +211,14 @@ const inMonth = (ym) => {
   return state.entries.filter((e) => e.date >= a && e.date <= b);
 };
 
-/* ---------------- bills, cards and the daily limit ---------------- */
+/* ---------------- bills, cards, goals and the daily limit ---------------- */
 
 const nextFrom = (item) => (item.last ? addDays(item.last, 1) : item.start);
 const later = (a, b) => (a > b ? a : b);
-const cardRule = (c) => ({ start: c.start, every: 'month' });
+const monthly = (x) => ({ start: x.start, every: 'month' });
 const byDate = (a, b) => a.date.localeCompare(b.date);
 
-/** Usual everyday spending per month, from up to three recent months (scaled up if logging started mid-month). */
+/** Usual everyday spending per month: up to three recent months, else this one once it has 10 days to go on. */
 function usualSpending() {
   const t = todayKey();
   const first = state.entries.reduce((m, e) => (e.date < m ? e.date : m), t);
@@ -214,48 +232,62 @@ function usualSpending() {
     const spent = totals(inMonth(ym).filter(isFlex)).out;
     sums.push(Math.round((spent * daysInMonth(ym)) / tracked));
   }
-  return sums.length ? Math.round(sums.reduce((a, b) => a + b, 0) / sums.length) : null;
+  if (sums.length) return Math.round(sums.reduce((a, b) => a + b, 0) / sums.length);
+  const ym = monthOf(t);
+  const tracked = Number(t.slice(8)) - Number(later(monthRange(ym)[0], first).slice(8)) + 1;
+  if (tracked < 10) return null;
+  return Math.round((totals(inMonth(ym).filter(isFlex)).out * daysInMonth(ym)) / tracked);
 }
 
 const billsPerMonth = () => state.bills.reduce((s, b) => s + monthlyCost(b), 0);
 const cardMinimums = () => state.cards.reduce((s, c) => s + minPayment(c), 0);
 
-/** What the budget has room for after bills and usual spending (plus a 10% cushion); null until there's a month to learn from. */
-function cardRoom() {
+/** What the budget leaves each month for cards and goals: after bills and usual spending, with a 10% cushion. */
+function planAuto() {
   const B = state.settings.budget;
   const usual = usualSpending();
   if (!B || usual == null) return null;
   return Math.max(0, Math.floor((B - billsPerMonth() - Math.round(usual * 1.1)) / 1000) * 1000);
 }
 
-/** Monthly amount for cards: the one you set, or Auto. Never below the minimums. */
-function cardMonthly() {
-  return Math.max(cardMinimums(), state.settings.cardMonthly ?? cardRoom() ?? 0);
-}
+/** Each month for cards and goals: the amount you set, or Auto. Card minimums always fit. */
+const planRoom = () => Math.max(cardMinimums(), state.settings.plan ?? planAuto() ?? 0);
 
-/** Payments for cards that haven't been added to the log yet this month. */
-function cardPays(ym) {
+/** A month of the plan with every card and goal in it. */
+const planFor = (ym) => splitPlan(state.cards, state.goals, planRoom(), state.settings.saveShare, ym);
+
+/** Card payments and goal amounts for a month that haven't landed in the log yet. */
+function pendingPays(ym) {
   const [from, to] = monthRange(ym);
   const done = new Set();
-  let used = 0;
+  let cardsUsed = 0;
+  let goalsUsed = 0;
   for (const e of state.entries) {
-    if (e.kind === 'card' && e.date >= from && e.date <= to) {
+    if (e.date < from || e.date > to) continue;
+    if (e.kind === 'card') {
       done.add(e.ref);
-      used += e.cents;
+      cardsUsed += e.cents;
+    } else if (e.kind === 'goal') {
+      done.add(e.ref);
+      goalsUsed += e.cents;
     }
   }
-  const pending = state.cards.filter((c) =>
-    !done.has(c.id) && occurrences(cardRule(c), later(from, nextFrom(c)), to).length);
-  return allocate(pending, Math.max(0, cardMonthly() - used));
+  const lands = (x) => !done.has(x.id) && occurrences(monthly(x), later(from, nextFrom(x)), to).length > 0;
+  const plan = planFor(ym);
+  return {
+    cards: allocate(state.cards.filter(lands), Math.max(0, plan.minimums + plan.toCards - cardsUsed)),
+    goals: shareGoals(state.goals.filter(lands), Math.max(0, plan.toGoals - goalsUsed), ym),
+  };
 }
 
-/** Bills and card payments for a month: what's in the log plus what's still to come. */
+/** Bills, card payments and goal amounts for a month: what's in the log plus what's still to come. */
 function fixedFor(ym) {
   const [from, to] = monthRange(ym);
   let sum = 0;
   for (const e of state.entries) if (e.kind && e.date >= from && e.date <= to) sum += e.cents;
   for (const b of state.bills) sum += occurrences(b, later(from, nextFrom(b)), to).length * b.cents;
-  for (const cents of cardPays(ym).values()) sum += cents;
+  const p = pendingPays(ym);
+  for (const cents of [...p.cards.values(), ...p.goals.values()]) sum += cents;
   return sum;
 }
 
@@ -268,7 +300,7 @@ function monthMath(ym) {
   return { ym, B, items, flex, fixed, flexSpent, dim: daysInMonth(ym), left: B - fixed - flexSpent };
 }
 
-/** A day's limit: the month's budget, minus bills and earlier spending, split over the days left. */
+/** A day's limit: the month's budget, minus bills, the plan and earlier spending, split over the days left. */
 function limitOn(day, m = monthMath(monthOf(day))) {
   if (!m.B) return null;
   let before = 0;
@@ -277,7 +309,9 @@ function limitOn(day, m = monthMath(monthOf(day))) {
   return Math.max(0, Math.floor((m.B - m.fixed - before) / daysLeft / 100) * 100);
 }
 
-/** Adds bills and card payments whose dates have come. Card payments wait to be ticked off. */
+const goalEntryName = (g) => `To ${g.name}`;
+
+/** Adds bills, card payments and goal amounts whose dates have come. Payments and goal amounts wait to be ticked off. */
 function postDue() {
   const t = todayKey();
   let changed = false;
@@ -288,38 +322,70 @@ function postDue() {
       changed = true;
     }
   }
-  for (const c of state.cards) {
-    for (const d of occurrences(cardRule(c), nextFrom(c), t)) {
-      const cents = cardPays(monthOf(d)).get(c.id) || 0;
-      if (cents > 0) {
-        state.entries.push({ id: uid(), date: d, name: `${c.name} payment`, cents, income: false, at: parseKey(d).getTime(), kind: 'card', ref: c.id, due: true });
+  const land = (list, kind, name) => {
+    for (const x of list) {
+      for (const d of occurrences(monthly(x), nextFrom(x), t)) {
+        const cents = pendingPays(monthOf(d))[kind === 'card' ? 'cards' : 'goals'].get(x.id) || 0;
+        if (cents > 0) {
+          state.entries.push({ id: uid(), date: d, name: name(x), cents, income: false, at: parseKey(d).getTime(), kind, ref: x.id, due: true });
+        }
+        x.last = d;
+        changed = true;
       }
-      c.last = d;
-      changed = true;
     }
-  }
+  };
+  land(state.cards, 'card', (c) => `${c.name} payment`);
+  land(state.goals, 'goal', goalEntryName);
   if (changed) save({ quiet: true });
 }
 
-/** Unpaid card payments, then what's due in the next `days` days. */
+/** Payments and goal amounts waiting to be ticked off, then what's due in the next `days` days. */
 function upcoming(days) {
   const t = todayKey();
   const from = addDays(t, 1);
   const to = addDays(t, days);
-  const due = state.entries.filter((e) => e.due).map((e) => ({ id: e.id, name: e.name, cents: e.cents, date: e.date, due: true }));
+  const due = state.entries.filter((e) => e.due)
+    .map((e) => ({ id: e.id, name: e.name, cents: e.cents, date: e.date, kind: e.kind, due: true }));
   const soon = [];
   for (const b of state.bills) {
-    for (const d of occurrences(b, later(from, nextFrom(b)), to)) soon.push({ name: b.name, cents: b.cents, date: d });
+    for (const d of occurrences(b, later(from, nextFrom(b)), to)) soon.push({ name: b.name, cents: b.cents, date: d, kind: 'bill' });
   }
-  const thisMonth = cardPays(monthOf(t));
-  const typical = allocate(state.cards, cardMonthly());
-  for (const c of state.cards) {
-    for (const d of occurrences(cardRule(c), later(from, nextFrom(c)), to)) {
-      const cents = (monthOf(d) === monthOf(t) ? thisMonth : typical).get(c.id) || 0;
-      if (cents) soon.push({ name: `${c.name} payment`, cents, date: d });
+  const now = pendingPays(monthOf(t));
+  const next = planFor(addMonths(monthOf(t), 1));
+  const add = (list, kind, name) => {
+    for (const x of list) {
+      for (const d of occurrences(monthly(x), later(from, nextFrom(x)), to)) {
+        const cents = (monthOf(d) === monthOf(t) ? now : next)[`${kind}s`].get(x.id) || 0;
+        if (cents) soon.push({ name: name(x), cents, date: d, kind });
+      }
     }
-  }
+  };
+  add(state.cards, 'card', (c) => `${c.name} payment`);
+  add(state.goals, 'goal', goalEntryName);
   return [...due.sort(byDate), ...soon.sort(byDate)];
+}
+
+/** The next card payment or goal amount: { cents, date }, or null. */
+function nextPay(x, kind) {
+  const t = todayKey();
+  const d = occurrences(monthly(x), later(t, nextFrom(x)), addDays(t, 62))[0];
+  if (!d) return null;
+  const plan = monthOf(d) === monthOf(t) ? pendingPays(monthOf(t)) : planFor(monthOf(d));
+  const cents = plan[kind].get(x.id) || 0;
+  return cents ? { cents, date: d } : null;
+}
+
+/** The plan run forward from today: when each card is paid off and each goal reached. */
+function projection() {
+  const ym = monthOf(todayKey());
+  const [from, to] = monthRange(ym);
+  // this month counts only for what's still to be paid or moved in it
+  const skip = new Set();
+  for (const x of [...state.cards, ...state.goals]) {
+    const e = state.entries.find((y) => y.ref === x.id && (y.kind === 'card' || y.kind === 'goal') && y.date >= from && y.date <= to);
+    if (e ? !e.due : !occurrences(monthly(x), later(from, nextFrom(x)), to).length) skip.add(x.id);
+  }
+  return project(state.cards, state.goals, planRoom(), state.settings.saveShare, ym, skip);
 }
 
 /* Count-up for totals, so a new entry visibly lands in the sum. */
@@ -346,57 +412,18 @@ function tween(node, value, show, animate) {
 
 /* ---------------- the day ---------------- */
 
-const STATUS_WORDS = { good: 'On track', tight: 'Running tight', over: 'Over budget' };
-
-function statusText(status, ym) {
-  const month = fmt({ month: 'short' }).format(parseKey(`${ym}-01`));
-  const word = status === 'good' && ym < monthOf(todayKey()) ? 'Under budget' : STATUS_WORDS[status];
-  return word ? `${word} in ${month}` : '';
-}
-
-/* How the month is going: over budget, on pace to run out before it ends, or on track. */
-function monthStatus(ym) {
-  const m = monthMath(ym);
-  if (!m.B) return 'calm';
-  if (m.left < 0) return 'over';
-  const t = todayKey();
-  if (ym !== monthOf(t)) return 'good';
-  const day = Number(t.slice(8));
-  const projected = m.left - (m.flexSpent / day) * (m.dim - day);
-  return projected >= 0 ? 'good' : 'tight';
-}
-
-function updatedText(ts) {
-  if (!ts) return '';
-  if (Date.now() - ts < 60_000) return 'Updated just now';
-  const d = new Date(ts);
-  const k = keyOf(d);
-  const t = todayKey();
-  if (k === t) return `Updated ${fmt({ hour: 'numeric', minute: '2-digit' }).format(d)}`;
-  if (k === addDays(t, -1)) return 'Updated yesterday';
-  return `Updated ${shortDate(k)}`;
-}
-
-/* The card at the top: the day, what went out, the month's status as its colour, and when data last changed. */
-function renderDayCard(items, out, inn, animate) {
-  const day = dayTitle(view);
-  const ym = monthOf(view);
-  const status = monthStatus(ym);
-  el.dayName.textContent = day;
-  el.dcDay.textContent = day;
-  el.title.className = `daycard ${status}`;
-  el.dcStatus.hidden = status === 'calm';
-  el.dcStatus.textContent = statusText(status, ym);
-  tween(el.dcAmount, out, (v) => money(v), animate);
-  el.dcLabel.textContent = !items.length
-    ? (view === todayKey() ? 'Nothing yet' : 'Nothing logged')
-    : inn ? `spent, ${money(inn)} in` : 'spent';
-  el.dcUpdated.textContent = updatedText(state.updatedAt);
+function subText(out, inn, saved, count) {
+  if (!count) return view === todayKey() ? 'Nothing yet' : 'Nothing logged';
+  const parts = [];
+  if (out || (!inn && !saved)) parts.push(`${money(out)} spent`);
+  if (saved) parts.push(`${money(saved)} saved`);
+  if (inn) parts.push(`${money(inn)} in`);
+  return parts.join(', ');
 }
 
 function rowEl(e, isNew) {
   const li = h(`li.row${isNew ? '.new' : ''}${e.due ? '.due' : ''}`, { dataset: { id: e.id } });
-  if (e.due) li.append(h('button.tick', { type: 'button', 'aria-label': `Mark ${e.name} as paid` }));
+  if (e.due) li.append(h('button.tick', { type: 'button', 'aria-label': `Mark ${e.name} as ${e.kind === 'goal' ? 'moved' : 'paid'}` }));
   li.append(h('span.name', e.name));
   if (e.kind) li.append(repeatIcon());
   li.append(h('span.amt', (e.income ? '+' : '') + fmtPlain(e.cents)));
@@ -405,10 +432,16 @@ function rowEl(e, isNew) {
 
 function renderDay(opts = {}) {
   const items = byDay(view);
-  const { out, inn } = totals(items);
+  const { out, inn, saved } = totals(items);
   const isToday = view === todayKey();
+  el.title.textContent = dayTitle(view);
   el.goToday.hidden = isToday;
-  renderDayCard(items, out, inn, opts.animate);
+  if (items.length) {
+    tween(el.sub, out, (v) => subText(v, inn, saved, items.length), opts.animate);
+  } else {
+    shown.delete(el.sub);
+    el.sub.textContent = '';
+  }
   el.tip.hidden = !items.length || state.ui.tipSeen;
   el.list.replaceChildren(...items.map((e) => rowEl(e, e.id === opts.flash)));
   renderStrip();
@@ -417,6 +450,14 @@ function renderDay(opts = {}) {
   if (openSheetEl === el.monthSheet) renderMonth();
   if (openSheetEl === el.findSheet) renderFind();
   if (openSheetEl === el.entrySheet) renderEntry();
+  if (openSheetEl === el.stackSheet) refreshStack();
+}
+
+const dueWord = (u) => (u.kind === 'goal' ? `move to ${u.name.replace(/^To /, '')}` : `pay ${shortName(u.name)}`);
+function dueCount(due) {
+  if (due.every((u) => u.kind === 'card')) return `${due.length} to pay`;
+  if (due.every((u) => u.kind === 'goal')) return `${due.length} to move`;
+  return `${due.length} to tick off`;
 }
 
 /* The card: a ring for today's limit, what's left of it, what's left this month, and the next thing due. */
@@ -448,7 +489,7 @@ function renderBar(animate) {
   // a payment waiting to be made goes first, so it stays visible on small phones
   if (due.length) {
     const sum = due.reduce((s, u) => s + u.cents, 0);
-    stats.unshift([money(sum, true), due.length === 1 ? `pay ${shortName(due[0].name)}` : `${due.length} to pay`]);
+    stats.unshift([money(sum, true), due.length === 1 ? dueWord(due[0]) : dueCount(due)]);
   } else if (soon.length) {
     stats.push([money(soon[0].cents, true), `${shortName(soon[0].name)} ${when(soon[0].date)}`]);
   }
@@ -626,8 +667,17 @@ function entryPanel(e) {
     return [
       h('p.lead', money(e.cents), h('small', e.due ? `due ${shortDay(e.date)}` : 'paid')),
       h('p.fine', e.due
-        ? 'Worked out from your card plan: minimums first, the rest to the highest rate. Tick it off once you’ve paid.'
+        ? 'Your plan’s pay-down for this card: every minimum first, then the most toward the highest rate. It’s on top of anything new you’ve put on the card. Tick it off once you’ve paid.'
         : c ? `${c.name} balance is now about ${money(c.balance, true)}.` : 'Paid.'),
+    ];
+  }
+  if (e.kind === 'goal') {
+    const g = state.goals.find((x) => x.id === e.ref);
+    return [
+      h('p.lead', money(e.cents), h('small', e.due ? `due ${shortDay(e.date)}` : 'moved')),
+      h('p.fine', e.due
+        ? `Your plan sets this aside for ${g ? g.name : 'a goal'}. Tick it off once you’ve moved the money.`
+        : g ? goalSoFar(g) : 'Moved.'),
     ];
   }
 
@@ -661,21 +711,32 @@ function entryPanel(e) {
   ];
 }
 
+function goalSoFar(g) {
+  const word = g.kind === 'invest' ? 'invested' : 'saved';
+  return g.target > 0
+    ? `${g.name} is at ${money(g.saved, true)} of ${money(g.target, true)}.`
+    : `${money(g.saved, true)} ${word} in ${g.name} so far.`;
+}
+
 function entryActions(e) {
-  const after = (fn) => () => {
-    closeSheet();
-    setTimeout(fn, 160);
-  };
+  const edit = (...views) => () => handOff(() => openStack(...views));
   if (e.kind === 'card') {
     const card = state.cards.find((c) => c.id === e.ref);
     return [
       e.due && h('button.primary', { type: 'button', onclick: () => markPaid(e.id) }, 'Mark as paid'),
-      card && pillBtn('Edit card', after(() => openBills({ type: 'card', id: card.id }))),
+      card && pillBtn('Edit card', edit({ type: 'cards' }, { type: 'card', id: card.id })),
+    ];
+  }
+  if (e.kind === 'goal') {
+    const goal = state.goals.find((g) => g.id === e.ref);
+    return [
+      e.due && h('button.primary', { type: 'button', onclick: () => markPaid(e.id) }, 'Mark as moved'),
+      goal && pillBtn('Edit goal', edit({ type: 'goals' }, { type: 'goal', id: goal.id })),
     ];
   }
   if (e.kind === 'bill') {
     const bill = state.bills.find((b) => b.id === e.ref);
-    return [bill && pillBtn('Edit bill', after(() => openBills({ type: 'bill', id: bill.id })))];
+    return [bill && pillBtn('Edit bill', edit({ type: 'bills' }, { type: 'bill', id: bill.id }))];
   }
   return [pillBtn(`See every ${e.name}`, () => openFind(e.name))];
 }
@@ -733,19 +794,25 @@ function removeEntry(id) {
   });
 }
 
-/* Ticking off a card payment also lowers that card's balance (with a month's interest). */
+/* Ticking off a card payment lowers that card's balance (with a month's interest); a goal amount adds to the goal. */
 function markPaid(id) {
   const e = state.entries.find((x) => x.id === id);
   if (!e?.due) return;
-  const card = state.cards.find((c) => c.id === e.ref);
-  const before = card?.balance;
+  const card = e.kind === 'card' ? state.cards.find((c) => c.id === e.ref) : null;
+  const goal = e.kind === 'goal' ? state.goals.find((g) => g.id === e.ref) : null;
+  const before = card ? { balance: card.balance, updated: card.updated } : goal?.saved;
   e.due = false;
-  if (card) card.balance = Math.max(0, Math.round(card.balance * (1 + card.apr / 1200)) - e.cents);
+  if (card) {
+    card.balance = Math.max(0, Math.round(card.balance * (1 + card.apr / 1200)) - e.cents);
+    card.updated = todayKey();
+  }
+  if (goal) goal.saved += e.cents;
   save();
   renderDay({ animate: true });
-  toast(`Paid ${shortName(e.name)}`, 'Undo', () => {
+  toast(goal ? `Moved ${money(e.cents, true)} to ${goal.name}` : `Paid ${shortName(e.name)}`, 'Undo', () => {
     e.due = true;
-    if (card) card.balance = before;
+    if (card) Object.assign(card, before);
+    if (goal) goal.saved = before;
     save();
     renderDay({ animate: true });
   });
@@ -914,7 +981,7 @@ el.drawer.addEventListener('click', (ev) => {
   if (go === 'today') goTo(todayKey(), 1);
   else if (go === 'history') soon(() => openFind(''));
   else if (go === 'month') soon(() => openMonth(monthOf(view)));
-  else if (go === 'bills') soon(() => openBills());
+  else if (go === 'cards' || go === 'goals' || go === 'bills') soon(() => openStack({ type: go }));
   else if (go === 'settings') soon(() => openMenu());
   else if (go === 'backup') backup();
 });
@@ -975,11 +1042,17 @@ document.addEventListener('keydown', (ev) => {
 
 /* ---------------- sheets ---------------- */
 
-const sheets = [el.entrySheet, el.monthSheet, el.menuSheet, el.billsSheet, el.findSheet];
+const sheets = [el.entrySheet, el.monthSheet, el.menuSheet, el.stackSheet, el.findSheet];
+const EASE_SHEET = 'cubic-bezier(.32, .72, 0, 1)';
+const EASE_OUT = 'cubic-bezier(.2, .8, .2, 1)';
+let handOffTimer;
 
 function openSheet(sheet) {
+  clearTimeout(handOffTimer);
   if (drawerOpen()) closeDrawer();
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  sheet._h?.cancel();
+  unhold(sheet);
   for (const s of sheets) {
     if (s === sheet) continue;
     s.classList.remove('open');
@@ -997,22 +1070,92 @@ function openSheet(sheet) {
   el.main.inert = true;
 }
 
-function closeSheet() {
+function closeSheet({ keepScrim = false } = {}) {
+  clearTimeout(handOffTimer);
   const sheet = openSheetEl;
-  if (!sheet) return;
   openSheetEl = null;
-  if (sheet.contains(document.activeElement)) document.activeElement.blur();
-  sheet.classList.remove('open', 'dragging');
-  sheet.style.transform = '';
-  sheet.inert = true;
-  sheet.setAttribute('aria-hidden', 'true');
+  if (sheet) {
+    if (sheet.contains(document.activeElement)) document.activeElement.blur();
+    sheet.classList.remove('open', 'dragging');
+    sheet.style.transform = '';
+    sheet.inert = true;
+    sheet.setAttribute('aria-hidden', 'true');
+  }
+  if (keepScrim) return;
   el.scrim.classList.remove('open');
   el.scrim.style.opacity = '';
   document.body.classList.remove('sheet-open');
   el.main.inert = false;
 }
 
-el.scrim.addEventListener('click', closeSheet);
+el.scrim.addEventListener('click', () => closeSheet());
+
+/* From one sheet to another: the first slides away, then the next one comes up. */
+function handOff(open) {
+  if (!openSheetEl) {
+    open();
+    return;
+  }
+  closeSheet({ keepScrim: true });
+  handOffTimer = setTimeout(open, 210);
+}
+
+/* Sheets hug what's in them. When that changes, the height eases to the new size instead of jumping. */
+function animateHeight(sheet, change) {
+  const moving = sheet.classList.contains('open') && !reduceMotion.matches;
+  const from = moving ? sheet.getBoundingClientRect().height : 0;
+  sheet._h?.cancel();
+  change();
+  if (!moving || sheet.style.height) return;
+  const to = sheet.getBoundingClientRect().height;
+  if (Math.abs(to - from) < 1) return;
+  sheet._h = sheet.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 380, easing: EASE_SHEET });
+}
+
+/* Moving between views in a sheet: the old one slips out, the new one slides in, the sheet resizes to fit. */
+function slide(sheet, render, dir) {
+  const body = sheet.querySelector('.sheet-body');
+  const old = body.firstElementChild;
+  if (sheet.contains(document.activeElement)) document.activeElement.blur();
+  unhold(sheet);
+  if (!old || !sheet.classList.contains('open') || reduceMotion.matches) {
+    render();
+    body.scrollTop = 0;
+    return;
+  }
+  const token = (sheet._slide = (sheet._slide || 0) + 1);
+  const out = old.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${-28 * dir}px)` }],
+    { duration: 140, easing: 'ease-in', fill: 'forwards' });
+  out.onfinish = () => {
+    if (token !== sheet._slide) return;
+    const from = sheet.getBoundingClientRect().height;
+    sheet._h?.cancel();
+    render();
+    body.scrollTop = 0;
+    const to = sheet.getBoundingClientRect().height;
+    if (Math.abs(to - from) >= 1) sheet._h = sheet.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 400, easing: EASE_SHEET });
+    body.firstElementChild?.animate([{ opacity: 0, transform: `translateX(${28 * dir}px)` }, { opacity: 1, transform: 'none' }],
+      { duration: 320, easing: EASE_OUT });
+  };
+}
+
+/* While you type in a sheet it keeps its height, so the field doesn't move under your thumb. */
+function hold(sheet) {
+  if (sheet.style.height || !sheet.classList.contains('open')) return;
+  sheet._h?.cancel();
+  sheet.style.height = `${sheet.getBoundingClientRect().height}px`;
+}
+function unhold(sheet) {
+  sheet.style.height = '';
+}
+for (const sheet of [el.findSheet, el.stackSheet, el.menuSheet]) {
+  sheet.addEventListener('focusin', (ev) => {
+    if (ev.target.matches('input:not([type="range"]), select')) hold(sheet);
+  });
+  sheet.addEventListener('focusout', () => setTimeout(() => {
+    if (sheet.style.height && !sheet.contains(document.activeElement)) animateHeight(sheet, () => unhold(sheet));
+  }, 0));
+}
 
 /* Pull a sheet down to close it. */
 function draggable(sheet) {
@@ -1021,6 +1164,7 @@ function draggable(sheet) {
   sheet.addEventListener('touchstart', (ev) => {
     g = null;
     if (ev.touches.length !== 1) return;
+    if (ev.target.closest('input[type="range"]')) return; // sliding, not closing
     const onTop = ev.target.closest('.sheet-grab, .sheet-top');
     if (!onTop && body.scrollTop > 0) return;
     g = { y: ev.touches[0].clientY, t: performance.now(), dy: 0, on: false, onTop: !!onTop };
@@ -1102,29 +1246,46 @@ el.mNext.addEventListener('click', () => {
   monthView = addMonths(monthView, 1);
   renderMonth();
 });
-el.mSetBudget.addEventListener('click', () => openMenu(true));
-el.mBills.addEventListener('click', () => openBills());
-el.mSettings.addEventListener('click', () => openMenu());
+el.mSetBudget.addEventListener('click', () => handOff(() => openMenu(true)));
+el.mCards.addEventListener('click', () => handOff(() => openStack({ type: 'cards' })));
+el.mGoals.addEventListener('click', () => handOff(() => openStack({ type: 'goals' })));
+el.mBills.addEventListener('click', () => handOff(() => openStack({ type: 'bills' })));
+el.mSettings.addEventListener('click', () => handOff(() => openMenu()));
 
 /* Short sentences worked out on the phone from your own numbers. Each is a list of text and bold parts. */
 const bold = (t) => h('b', t);
+
+/* Where a spare amount at the end of the month would do the most. */
+function spareGoesTo() {
+  const debt = state.cards.filter((c) => c.balance > 0).sort((a, b) => b.apr - a.apr)[0];
+  if (debt) return debt.name;
+  return state.goals.find((g) => goalLeft(g) > 0)?.name ?? null;
+}
+
+const needPerMonth = (g) => Math.ceil(goalLeft(g) / monthsTo(monthOf(todayKey()), g.by) / 100) * 100;
+
 function insightsFor(m) {
   const notes = [];
   const t = todayKey();
   const isNow = m.ym === monthOf(t);
+  let covers = null;
 
   if (isNow && m.B) {
     const day = Number(t.slice(8));
     const rest = m.dim - day;
     if (m.left < 0) {
-      notes.push(['You’re ', bold(money(-m.left, true)), ' over this month’s budget.']);
-    } else if (day >= 3 && m.flexSpent > 0) {
-      const perDay = m.flexSpent / day;
-      if (perDay * rest > m.left) {
-        const lasts = Math.floor(m.left / perDay);
-        notes.push(['At this pace the money runs out around ', bold(shortDate(addDays(t, lasts))), `, ${plural(rest - lasts, 'day')} early.`]);
+      notes.push(['You’re ', bold(money(-m.left, true)), ` past ${monthLabel(m.ym)}’s budget. It starts fresh on the 1st.`]);
+    } else if (day >= 3 && rest > 0 && m.flexSpent > 0) {
+      // the month's pace, with bills, card payments and goals already set aside
+      const pace = m.flexSpent / day;
+      const spare = Math.round(m.left - pace * rest);
+      if (spare >= 0) {
+        const to = spare >= 2000 ? spareGoesTo() : null;
+        notes.push(['On pace to finish ', monthLabel(m.ym), ' with about ', bold(money(spare, true)), ' to spare',
+          to ? `, which could go to ${to}.` : '.']);
       } else {
-        notes.push(['At this pace you’ll end ', monthLabel(m.ym), ' with about ', bold(money(Math.round(m.left - perDay * rest), true)), ' left.']);
+        const aim = Math.floor(m.left / rest / 100) * 100;
+        notes.push(['About ', bold(`${money(aim, true)} a day`), ` from here keeps ${monthLabel(m.ym)} on budget. You’ve been at ${money(Math.round(pace / 100) * 100, true)}.`]);
       }
     }
     if (m.left > 0) {
@@ -1138,24 +1299,37 @@ function insightsFor(m) {
           const n = Math.floor(m.left / x.avg);
           parts.push(i ? ' or ' : '', `${x.name} `, bold(String(n)), n === 1 ? ' more time' : ' more times');
         });
-        notes.push([...parts, '.']);
+        covers = [...parts, '.'];
       }
     }
   }
 
-  if (isNow && state.cards.some((c) => c.balance > 0)) {
-    const p = payoff(state.cards, cardMonthly());
-    if (p.months === Infinity) {
-      notes.push('At these payments your card balances won’t shrink. Put more toward them.');
-    } else {
-      const extra = payoff(state.cards, p.pay + 10000);
-      const sooner = p.months - extra.months;
-      const more = sooner > 0 ? ` ${money(10000, true)} more a month: ${plural(sooner, 'month')} sooner.` : '';
-      notes.push(['Cards paid off by ', bold(monthLabel(addMonths(monthOf(t), p.months - 1))), `, ${money(p.interest, true)} in interest.${more}`]);
+  if (isNow && (state.cards.some((c) => c.balance > 0) || state.goals.some((g) => g.target > 0 && goalLeft(g) > 0))) {
+    const pr = projection();
+    if (state.cards.some((c) => c.balance > 0)) {
+      notes.push(Number.isFinite(pr.cardsDone)
+        ? ['Cards paid off by ', bold(inMonths(pr.cardsDone)), pr.interest ? `, about ${money(pr.interest, true)} in interest on the way.` : '.']
+        : ['At this plan your card balances won’t shrink. Sliding toward cards in Cards changes that.']);
+    }
+    const g = state.goals.find((x) => x.target > 0 && goalLeft(x) > 0);
+    if (g) {
+      const n = pr.goalMonths.get(g.id);
+      const pct = Math.floor((g.saved / g.target) * 100);
+      if (g.by && (!n || addMonths(m.ym, n - 1) > g.by)) {
+        notes.push([`${g.name} needs about `, bold(`${money(needPerMonth(g), true)} a month`), ` to make ${monthYear(g.by)}. Sliding toward goals helps it catch up.`]);
+      } else {
+        notes.push([`${g.name} is `, bold(`${pct}%`), ' there', n ? [', on track for ', bold(inMonths(n)), '.'] : '.']);
+      }
     }
   }
+  if (covers) notes.push(covers);
 
   if (isNow) {
+    const limited = state.cards.filter((c) => c.limit > 0);
+    if (limited.length) {
+      const used = Math.round((limited.reduce((s, c) => s + c.balance, 0) / limited.reduce((s, c) => s + c.limit, 0)) * 100);
+      notes.push(['You’re using ', bold(`${used}%`), ' of your card limits', used > 30 ? '. Under 30% tends to help your credit score.' : ', under the 30% that helps your credit score.']);
+    }
     const top = habits(state.entries, addDays(t, -29), t, 4)[0];
     if (top) notes.push([bold(money(Math.round((top.cents * 365) / 30), true)), ` a year on ${top.name}, at ${top.count} times a month.`]);
   } else {
@@ -1168,7 +1342,7 @@ function insightsFor(m) {
         : ['Everyday spending was ', bold(`${Math.abs(d)}% ${d > 0 ? 'higher' : 'lower'}`), ` than in ${monthLabel(prevYm)}.`]);
     }
   }
-  return notes.slice(0, 4);
+  return notes.slice(0, 5);
 }
 
 function note(text) {
@@ -1197,7 +1371,7 @@ function renderMonth() {
     const fixedPct = Math.min(100, (m.fixed / m.B) * 100);
     el.mFixed.style.width = `${fixedPct}%`;
     el.mFlex.style.width = `${Math.min(100 - fixedPct, (m.flexSpent / m.B) * 100)}%`;
-    el.mFixedLabel.textContent = m.fixed ? `Bills and cards ${money(m.fixed, true)}` : '';
+    el.mFixedLabel.textContent = m.fixed ? `Set aside ${money(m.fixed, true)}` : '';
     el.mFlexLabel.textContent = `Spending ${money(m.flexSpent, true)}`;
   }
   el.mSetBudget.hidden = !!m.B || !isNow;
@@ -1236,7 +1410,7 @@ function renderMonth() {
   el.mSoonLabel.hidden = !soon.length;
   el.mSoon.replaceChildren(...soon.map((u) => {
     const li = h(`li.row${u.due ? '.due' : ''}`);
-    if (u.due) li.append(h('button.tick', { type: 'button', 'aria-label': `Mark ${u.name} as paid`, onclick: () => markPaid(u.id) }));
+    if (u.due) li.append(h('button.tick', { type: 'button', 'aria-label': `Mark ${u.name} as ${u.kind === 'goal' ? 'moved' : 'paid'}`, onclick: () => markPaid(u.id) }));
     li.append(h('span.name', shortName(u.name)), h('span.count', u.due ? `due ${u.date === t ? 'today' : shortDate(u.date)}` : when(u.date)), h('span.amt', fmtPlain(u.cents)));
     return li;
   }));
@@ -1301,7 +1475,7 @@ function renderFind() {
 function renderHistory() {
   const days = new Map();
   for (const e of state.entries) {
-    if (e.due) continue;
+    if (e.due || e.kind === 'goal') continue;
     const d = days.get(e.date) ?? { out: 0, inn: 0 };
     if (e.income) d.inn += e.cents;
     else d.out += e.cents;
@@ -1345,8 +1519,10 @@ function syncSettings() {
   if (document.activeElement !== el.budget) el.budget.value = b ? money(b) : '';
   el.currency.value = state.settings.currency;
   el.currencyValue.textContent = state.settings.currency;
-  const n = state.bills.length + state.cards.length;
-  el.billsCount.textContent = n ? String(n) : 'None yet';
+  const count = (n) => (n ? String(n) : 'None yet');
+  el.billsCount.textContent = count(state.bills.length);
+  el.cardsCount.textContent = count(state.cards.length);
+  el.goalsCount.textContent = count(state.goals.length);
 }
 
 function openMenu(focusBudget = false) {
@@ -1388,7 +1564,9 @@ el.currency.addEventListener('change', () => {
   renderDay();
 });
 
-el.billsBtn.addEventListener('click', () => openBills());
+for (const [btn, type] of [[el.cardsBtn, 'cards'], [el.goalsBtn, 'goals'], [el.billsBtn, 'bills']]) {
+  btn.addEventListener('click', () => handOff(() => openStack({ type })));
+}
 
 async function shareFile(filename, type, text) {
   const file = new File([text], filename, { type });
@@ -1447,12 +1625,8 @@ el.restoreFile.addEventListener('change', async () => {
     const added = merge(state.entries, incoming, sanitizeEntry);
     merge(state.bills, arr(data.bills), sanitizeBill);
     merge(state.cards, arr(data.cards), sanitizeCard);
-    const st = data?.settings;
-    if (st && typeof st === 'object') {
-      if (typeof st.currency === 'string' && st.currency) state.settings.currency = st.currency;
-      if (posInt(st.budget)) state.settings.budget = st.budget;
-      if (posInt(st.cardMonthly)) state.settings.cardMonthly = st.cardMonthly;
-    }
+    merge(state.goals, arr(data.goals), sanitizeGoal);
+    readSettings(state.settings, data?.settings);
     save();
     fillCurrencies();
     syncSettings();
@@ -1467,7 +1641,7 @@ el.restoreFile.addEventListener('change', async () => {
 
 el.eraseBtn.addEventListener('click', () => {
   // eslint-disable-next-line no-alert
-  if (!window.confirm('Erase all entries, bills, cards and settings? This can’t be undone. Save a backup first if you might want them back.')) return;
+  if (!window.confirm('Erase all entries, bills, cards, goals and settings? This can’t be undone. Save a backup first if you might want them back.')) return;
   state = blank();
   save();
   closeSheet();
@@ -1477,95 +1651,90 @@ el.eraseBtn.addEventListener('click', () => {
   toast('Everything erased');
 });
 
-/* ---------------- bills and cards ---------------- */
+/* ---------------- cards, goals and bills: one sheet whose views slide ---------------- */
 
-let billsForm = null; // null: the list; { type: 'bill' | 'card', id? }: a form
+let stack = [{ type: 'cards' }];
+let live = []; // bits of the open list that follow the slider
+let proj = null; // the plan run forward, for the open list
+let planPaint = null;
 
-function openBills(form = null) {
-  billsForm = form;
-  renderBills();
-  openSheet(el.billsSheet);
+const topView = () => stack[stack.length - 1];
+const isList = (v) => v.type === 'cards' || v.type === 'goals' || v.type === 'bills';
+const TITLES = { cards: 'Cards', goals: 'Goals', bills: 'Bills', card: 'Card', goal: 'Goal', bill: 'Bill' };
+
+function openStack(...views) {
+  stack = views;
+  renderStack();
+  openSheet(el.stackSheet);
 }
 
-function showBills(form) {
-  billsForm = form;
-  renderBills();
-  el.billsBody.scrollTop = 0;
+function push(view) {
+  stack.push(view);
+  slide(el.stackSheet, renderStack, 1);
 }
 
-function renderBills() {
-  const nodes = billsForm?.type === 'bill' ? billForm(billsForm.id)
-    : billsForm?.type === 'card' ? cardForm(billsForm.id)
-      : billsList();
-  el.billsBody.replaceChildren(...nodes.filter((n) => n instanceof Node));
+function pop() {
+  if (stack.length <= 1) {
+    closeSheet();
+    return;
+  }
+  stack.pop();
+  slide(el.stackSheet, renderStack, -1);
 }
 
-function repeatsText(b) {
-  if (b.every === 'week') return `Every ${fmt({ weekday: 'long' }).format(parseKey(b.start))}`;
-  if (b.every === 'year') return `Every year on ${shortDate(b.start)}`;
-  return `Every month on the ${ordinal(Number(b.start.slice(8)))}`;
+/* After adding, changing or deleting: back to the list, which shows the change. */
+function done() {
+  save();
+  postDue();
+  renderDay({ animate: true });
+  pop();
 }
 
-const nextDate = (item, every = 'month') => occurrences({ start: item.start, every }, nextFrom(item), '9999-12-31')[0] ?? item.start;
+function renderStack() {
+  const v = topView();
+  live = [];
+  planPaint = null;
+  proj = projection();
+  const nodes = v.type === 'cards' ? cardsView()
+    : v.type === 'goals' ? goalsView()
+      : v.type === 'bills' ? billsView()
+        : v.type === 'card' ? cardForm(v.id)
+          : v.type === 'goal' ? goalForm(v.id, v.preset)
+            : billForm(v.id);
+  el.stackBody.replaceChildren(h('div.view', nodes));
+  el.stackSheet.setAttribute('aria-label', TITLES[v.type]);
+  if (planPaint) planPaint();
+  else live.forEach((f) => f());
+}
 
-function cardPlanText() {
-  const pays = allocate(state.cards, cardMonthly());
-  const parts = state.cards.filter((c) => pays.get(c.id)).map((c) => `${c.name} ${money(pays.get(c.id), true)}`);
-  if (!parts.length) return 'All paid off.';
-  const auto = state.settings.cardMonthly == null;
-  const how = !auto ? '' : cardRoom() == null
-    ? ' Auto pays the minimums until it has a month of your spending to learn from.'
-    : ' Auto is what your budget leaves after bills and usual spending.';
-  return `Plan: ${parts.join(', ')} a month. Extra goes to the highest rate first, which costs the least interest.${how}`;
+/* Something changed underneath (a payment ticked off, a new day): redraw the list in place. */
+function refreshStack() {
+  const typing = document.activeElement?.matches?.('input, select, textarea') && el.stackSheet.contains(document.activeElement);
+  if (!isList(topView()) || typing) return;
+  const y = el.stackBody.scrollTop;
+  animateHeight(el.stackSheet, renderStack);
+  el.stackBody.scrollTop = y;
+}
+
+const BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg>';
+
+function listTop(title, link) {
+  let back = null;
+  if (stack.length > 1) {
+    back = h('button.back', { type: 'button', 'aria-label': 'Back', onclick: pop });
+    back.innerHTML = BACK;
+  }
+  return h('div.sheet-top', h('div.top-title', back, h('h2', title)), link);
+}
+
+function formTop(title) {
+  return h('div.sheet-top', h('h2', title), h('button.link', { type: 'button', onclick: pop }, 'Cancel'));
 }
 
 function plusIcon() {
   const s = h('span.add-icon');
   s.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>';
   return s;
-}
-
-function billsList() {
-  const billRows = state.bills.map((b) => h('button.item.two', { type: 'button', onclick: () => showBills({ type: 'bill', id: b.id }) },
-    h('span.item-main', h('span', b.name), h('small', repeatsText(b))), h('span.amt', fmtPlain(b.cents))));
-  const cardRows = state.cards.map((c) => h('button.item.two', { type: 'button', onclick: () => showBills({ type: 'card', id: c.id }) },
-    h('span.item-main', h('span', c.name), h('small', c.balance > 0 ? `${c.apr}%, due on the ${ordinal(Number(c.start.slice(8)))}` : 'Paid off')),
-    h('span.amt', c.balance > 0 ? fmtPlain(c.balance) : '')));
-
-  const monthly = h('input', { type: 'text', inputmode: 'decimal', enterkeyhint: 'done', autocomplete: 'off', 'aria-label': 'Toward cards per month' });
-  const showMonthly = () => {
-    const v = state.settings.cardMonthly;
-    monthly.value = v ? money(v, true) : '';
-    monthly.placeholder = `Auto, ${money(cardMonthly(), true)}`;
-  };
-  showMonthly();
-  monthly.addEventListener('focus', () => {
-    monthly.value = state.settings.cardMonthly ? String(state.settings.cardMonthly / 100) : '';
-  });
-  monthly.addEventListener('blur', () => {
-    const cents = readCents(monthly.value);
-    state.settings.cardMonthly = cents > 0 ? cents : null;
-    save();
-    renderBills();
-    renderDay();
-  });
-  monthly.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') {
-      ev.preventDefault();
-      monthly.blur();
-    }
-  });
-
-  return [
-    h('div.sheet-top', h('h2', 'Bills and cards')),
-    h('p.sub', 'Added to your days on their dates. Card payments wait for you to tick them off.'),
-    h('h3.label', 'Bills'),
-    h('div.group', billRows, h('button.item.add', { type: 'button', onclick: () => showBills({ type: 'bill' }) }, plusIcon(), 'Add a bill')),
-    h('h3.label', 'Cards'),
-    h('div.group', cardRows, h('button.item.add', { type: 'button', onclick: () => showBills({ type: 'card' }) }, plusIcon(), 'Add a card')),
-    state.cards.length && h('div.group', h('label.item', h('span', 'Per month'), monthly)),
-    state.cards.length && h('p.fine', cardPlanText()),
-  ];
 }
 
 function field(label, input) {
@@ -1586,16 +1755,407 @@ function dateInput(value) {
 }
 
 const firstOfNextMonth = () => `${addMonths(monthOf(todayKey()), 1)}-01`;
+const nextDate = (item, every = 'month') => occurrences({ start: item.start, every }, nextFrom(item), '9999-12-31')[0] ?? item.start;
 
-function formTop(title) {
-  return h('div.sheet-top', h('h2', title), h('button.link', { type: 'button', onclick: () => showBills(null) }, 'Cancel'));
+/** A tick and a line, for a payment or goal amount waiting on its day. */
+function dueLine(e, verb) {
+  return [
+    h('button.tick', { type: 'button', 'aria-label': `Mark ${e.name} as ${verb === 'Pay' ? 'paid' : 'moved'}`, onclick: () => markPaid(e.id) }),
+    h('span', `${verb} `, h('b', money(e.cents)), `, due ${when(e.date)}`),
+  ];
 }
 
-function afterChange() {
-  save();
-  postDue();
-  showBills(null);
-  renderDay({ animate: true });
+/* ---------- the plan: what's left each month, split between cards and goals ---------- */
+
+function planPanel() {
+  const B = state.settings.budget;
+  if (!B && state.settings.plan == null) {
+    return h('div.panel.plan',
+      h('p.plan-note', 'Set a monthly budget and the plan works out what’s left for cards and goals each month.'),
+      pillBtn('Set a budget', () => handOff(() => openMenu(true))));
+  }
+  const amount = h('input.plan-in', { type: 'text', inputmode: 'decimal', enterkeyhint: 'done', autocomplete: 'off', 'aria-label': 'Each month for cards and goals' });
+  const showAmount = () => {
+    const v = state.settings.plan;
+    amount.value = v ? money(v, true) : '';
+    amount.placeholder = `Auto, ${money(Math.max(cardMinimums(), planAuto() ?? 0), true)}`;
+  };
+  showAmount();
+  amount.addEventListener('focus', () => {
+    amount.value = state.settings.plan ? String(state.settings.plan / 100) : '';
+  });
+  amount.addEventListener('blur', () => {
+    const cents = readCents(amount.value);
+    state.settings.plan = cents > 0 ? cents : null;
+    save();
+    renderBar();
+    setTimeout(refreshStack, 0);
+  });
+  amount.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      amount.blur();
+    }
+  });
+
+  const hasDebt = state.cards.some((c) => c.balance > 0);
+  const hasGoals = state.goals.some((g) => goalLeft(g) > 0);
+  const both = hasDebt && hasGoals;
+  const range = h('input.range', { type: 'range', min: '0', max: '100', step: '5', 'aria-label': 'How much of it goes to goals rather than cards' });
+  range.value = String(state.settings.saveShare);
+  const toCards = h('b');
+  const toGoals = h('b');
+  const outcome = h('p.plan-out');
+  const note = h('p.plan-note');
+
+  planPaint = () => {
+    proj = projection();
+    const p = planFor(monthOf(todayKey()));
+    toCards.textContent = money(p.minimums + p.toCards, true);
+    toGoals.textContent = money(p.toGoals, true);
+    range.setAttribute('aria-valuetext', `${money(p.minimums + p.toCards, true)} to cards, ${money(p.toGoals, true)} to goals`);
+    if (!both) note.textContent = planNote(p, hasDebt, hasGoals);
+    outcome.replaceChildren(...outcomeParts());
+    outcome.hidden = !outcome.childNodes.length;
+    live.forEach((f) => f());
+  };
+  range.addEventListener('input', () => {
+    state.settings.saveShare = Number(range.value);
+    planPaint();
+  });
+  range.addEventListener('change', () => {
+    save();
+    renderBar(true);
+  });
+
+  return h('div.panel.plan',
+    h('label.plan-row', h('span', 'Each month for cards and goals'), amount),
+    both && h('div.plan-split',
+      h('div.split-ends', h('span', 'Pay off cards'), h('span', 'Save and invest')),
+      range,
+      h('div.split-amts', h('span.to-cards', toCards, ' to cards'), h('span.to-goals', toGoals, ' to goals'))),
+    !both && note,
+    outcome);
+}
+
+function planNote(p, hasDebt, hasGoals) {
+  if (!hasDebt && !hasGoals) return 'Add a card you’re paying down or a goal, and this is what goes to it.';
+  if (hasDebt) return `All of it goes to your cards${p.minimums ? `, ${money(p.minimums, true)} of it minimums` : ''}. Add a goal and you can split it.`;
+  return 'All of it goes to your goals.';
+}
+
+function outcomeParts() {
+  const parts = [];
+  if (state.cards.some((c) => c.balance > 0)) {
+    parts.push(Number.isFinite(proj.cardsDone)
+      ? ['Cards paid off by ', bold(inMonths(proj.cardsDone))]
+      : ['At this split, card balances won’t shrink']);
+  }
+  const reached = state.goals
+    .filter((g) => g.target > 0 && goalLeft(g) > 0 && proj.goalMonths.has(g.id))
+    .sort((a, b) => proj.goalMonths.get(a.id) - proj.goalMonths.get(b.id))
+    .slice(0, 2);
+  for (const g of reached) parts.push([`${g.name} by `, bold(inMonths(proj.goalMonths.get(g.id)))]);
+  if (!parts.length) return [];
+  return parts.flatMap((x, i) => (i ? ['. ', ...x] : x)).concat('.');
+}
+
+/* ---------- cards ---------- */
+
+function cardStatus(c) {
+  if (!(c.balance > 0)) return 'good';
+  if (!(c.limit > 0)) return 'calm';
+  const used = c.balance / c.limit;
+  return used < 0.3 ? 'good' : used < 0.6 ? 'tight' : 'over';
+}
+
+/* An Apple Card-like card. Its colour is how much of the limit is used; silver until there's a limit. */
+function cardFace(c, onclick) {
+  const face = h(onclick ? 'button.ccard' : 'div.ccard', onclick ? { type: 'button', onclick } : null,
+    h('span.cc-bg', { 'aria-hidden': 'true' }, h('span.cc-glow')),
+    h('span.cc-top', h('span.cc-name'), h('span.cc-pill')),
+    h('span.cc-bottom', h('span.cc-bal', h('b'), h('small')), h('span.cc-avail', h('b'), h('small', 'available'))));
+  paintFace(face, c);
+  return face;
+}
+
+function paintFace(face, c) {
+  face.className = `ccard ${cardStatus(c)}`;
+  const q = (sel) => face.querySelector(sel);
+  const used = c.limit > 0 ? Math.round((c.balance / c.limit) * 100) : null;
+  const pill = !(c.balance > 0) ? 'Paid off' : used != null ? `${used}% used` : 'Add limit';
+  q('.cc-name').textContent = c.name || 'New card';
+  q('.cc-pill').textContent = pill;
+  q('.cc-pill').hidden = !pill;
+  q('.cc-bal b').textContent = money(c.balance);
+  q('.cc-bal small').textContent = c.updated && c.updated !== todayKey() ? `Balance on ${shortDate(c.updated)}` : 'Balance';
+  q('.cc-avail').hidden = !(c.limit > 0);
+  if (c.limit > 0) q('.cc-avail b').textContent = money(Math.max(0, c.limit - c.balance), true);
+  if (face.tagName === 'BUTTON') {
+    face.setAttribute('aria-label', `${c.name}: ${money(c.balance)} balance${c.limit > 0 ? `, ${money(Math.max(0, c.limit - c.balance), true)} available` : ''}. Edit`);
+  }
+}
+
+function cardMeta(c) {
+  const due = state.entries.find((e) => e.due && e.kind === 'card' && e.ref === c.id);
+  if (due) return dueLine(due, 'Pay');
+  if (!(c.balance > 0)) return [h('span', c.limit > 0 ? 'Nothing owed.' : 'Nothing owed. Add its limit to see what’s available.')];
+  const parts = [];
+  const next = nextPay(c, 'cards');
+  if (next) parts.push(`${money(next.cents, true)} on ${shortDate(next.date)}`);
+  if (c.apr) parts.push(`${c.apr}%`);
+  const n = proj?.cardMonths.get(c.id);
+  parts.push(n ? `paid off ${inMonths(n)}` : 'not shrinking yet');
+  return [h('span', parts.join(' · '))];
+}
+
+function cardsView() {
+  const cards = state.cards;
+  const nodes = [listTop('Cards')];
+  if (cards.length) {
+    const owed = cards.reduce((s, c) => s + c.balance, 0);
+    const limited = cards.filter((c) => c.limit > 0);
+    const avail = limited.reduce((s, c) => s + Math.max(0, c.limit - c.balance), 0);
+    nodes.push(h('p.sub.lede', limited.length ? `${money(owed, true)} owed, ${money(avail, true)} available` : `${money(owed, true)} owed`));
+  }
+  for (const c of cards) {
+    const meta = h('div.cc-meta');
+    live.push(() => meta.replaceChildren(...cardMeta(c)));
+    nodes.push(cardFace(c, () => push({ type: 'card', id: c.id })), meta);
+  }
+  nodes.push(h('div.group', h('button.item.add', { type: 'button', onclick: () => push({ type: 'card' }) }, plusIcon(), cards.length ? 'Add another card' : 'Add a card')));
+  nodes.push(planPanel());
+  nodes.push(h('p.fine', 'Payments land on their due dates for you to tick off: every minimum first, then the most toward the highest rate, which costs the least interest.'));
+  if (cards.length) nodes.push(h('div.group', h('button.item', { type: 'button', onclick: () => push({ type: 'goals' }) }, h('span', 'Goals'), h('span.value', state.goals.length ? String(state.goals.length) : 'None yet'), h('span.chev', { 'aria-hidden': 'true' }))));
+  return nodes;
+}
+
+function cardForm(id) {
+  const c = state.cards.find((x) => x.id === id);
+  const name = textInput({ placeholder: 'Amex', autocapitalize: 'words', enterkeyhint: 'next' }, c?.name);
+  const balance = textInput({ inputmode: 'decimal', placeholder: '0', enterkeyhint: 'next' }, c ? String(c.balance / 100) : '');
+  const limit = textInput({ inputmode: 'decimal', placeholder: 'Optional', enterkeyhint: 'next' }, c?.limit ? String(c.limit / 100) : '');
+  const apr = textInput({ inputmode: 'decimal', placeholder: '24.9%', enterkeyhint: 'next' }, c ? `${c.apr}%` : '');
+  const min = textInput({ inputmode: 'decimal', placeholder: 'Optional', enterkeyhint: 'done' }, c?.min ? String(c.min / 100) : '');
+  const shownDate = c ? nextDate(c) : firstOfNextMonth();
+  const date = dateInput(shownDate);
+  const draft = () => ({
+    name: name.value.trim(),
+    balance: Math.max(0, readCents(balance.value) ?? 0),
+    limit: Math.max(0, readCents(limit.value) ?? 0),
+    updated: c && readCents(balance.value) === c.balance ? c.updated : null,
+  });
+  const face = cardFace(draft());
+  for (const i of [name, balance, limit]) i.addEventListener('input', () => paintFace(face, draft()));
+
+  const submit = () => {
+    const n = name.value.trim();
+    const bal = readCents(balance.value);
+    const lim = readCents(limit.value) ?? 0;
+    const rate = toNumber(apr.value.replace(/[^\d.,]/g, '') || '0');
+    const minimum = readCents(min.value) ?? 0;
+    if (!n || bal == null || !date.value || !Number.isFinite(rate) || rate >= 100) {
+      toast('Add a name, what you owe, the interest rate and a due date');
+      return;
+    }
+    const fields = { name: n, balance: bal, limit: Math.max(0, lim), apr: rate, min: minimum };
+    if (c) {
+      if (bal !== c.balance) fields.updated = todayKey();
+      Object.assign(c, fields);
+      if (date.value !== shownDate) Object.assign(c, { start: date.value, last: null });
+    } else {
+      state.cards.push({ id: uid(), ...fields, start: date.value, last: null, updated: todayKey() });
+    }
+    done();
+  };
+  const remove = () => {
+    state.cards = state.cards.filter((x) => x !== c);
+    state.entries = state.entries.filter((e) => !(e.due && e.ref === c.id));
+    done();
+  };
+
+  return [
+    formTop(c ? c.name : 'New card'),
+    h('div.cc-preview', face),
+    h('div.group', field('Name', name), field('Balance', balance), field('Credit limit', limit),
+      field('Interest rate (APR)', apr), field('Minimum payment', min), field(c ? 'Next due date' : 'Due date', date)),
+    h('p.fine', 'Balance is what you owe now; update it whenever you check. With the limit, the card shows what’s available. The plan pays it down on its due date.'),
+    h('button.primary', { type: 'button', onclick: submit }, c ? 'Save' : 'Add card'),
+    c && h('div.group', h('button.item.danger', { type: 'button', onclick: remove }, 'Delete card')),
+  ];
+}
+
+/* ---------- goals ---------- */
+
+function safetyTarget() {
+  const need = billsPerMonth() + (usualSpending() ?? 0);
+  return need ? Math.round((need * 3) / 10000) * 10000 : 0; // about three months of bills and spending
+}
+
+const IDEAS = [
+  ['Safety net', () => ({ name: 'Safety net', kind: 'save', target: safetyTarget() })],
+  ['Investing', () => ({ name: 'Investing', kind: 'invest' })],
+  ['A trip', () => ({ name: 'Trip', kind: 'save' })],
+];
+
+function goalMeta(g) {
+  const due = state.entries.find((e) => e.due && e.kind === 'goal' && e.ref === g.id);
+  if (due) return dueLine(due, 'Move');
+  if (g.target > 0 && g.saved >= g.target) return [h('span', 'Reached.')];
+  const next = nextPay(g, 'goals');
+  const parts = [next ? `${money(next.cents, true)} on ${shortDate(next.date)}` : 'Nothing planned for it yet'];
+  const n = proj?.goalMonths.get(g.id);
+  if (g.target > 0 && n) parts.push(`there by ${inMonths(n)}`);
+  if (g.by && g.target > 0 && (!n || addMonths(monthOf(todayKey()), n - 1) > g.by)) {
+    parts.push(`${money(needPerMonth(g), true)} a month makes ${monthYear(g.by)}`);
+  }
+  return [h('span', parts.join(' · '))];
+}
+
+function goalRow(g) {
+  const meta = h('div.goal-meta');
+  live.push(() => meta.replaceChildren(...goalMeta(g)));
+  let bar = null;
+  if (g.target > 0) {
+    const fill = h('i');
+    fill.style.width = `${Math.min(100, (g.saved / g.target) * 100)}%`;
+    bar = h('span.progress', fill);
+  }
+  const amt = g.target > 0 ? [money(g.saved, true), h('small', ` of ${money(g.target, true)}`)] : money(g.saved, true);
+  return h(`div.goal${g.kind === 'invest' ? '.invest' : ''}`,
+    h('button.goal-main', { type: 'button', onclick: () => push({ type: 'goal', id: g.id }) },
+      h('span.goal-top', h('span.goal-name', g.name, g.kind === 'invest' && h('small.kind', 'Invest')), h('span.goal-amt', amt)),
+      bar),
+    meta);
+}
+
+function goalsView() {
+  const goals = state.goals;
+  const nodes = [listTop('Goals')];
+  if (goals.length) {
+    const sum = (kind) => goals.filter((g) => g.kind === kind).reduce((s, g) => s + g.saved, 0);
+    const parts = [sum('save') && `${money(sum('save'), true)} saved`, sum('invest') && `${money(sum('invest'), true)} invested`].filter(Boolean);
+    nodes.push(h('p.sub.lede', parts.length ? parts.join(', ') : 'Nothing put aside yet'));
+    nodes.push(h('div.group.goals', goals.map(goalRow)));
+  }
+  nodes.push(h('div.group', h('button.item.add', { type: 'button', onclick: () => push({ type: 'goal' }) }, plusIcon(), goals.length ? 'Add another goal' : 'Add a goal')));
+  if (!goals.length) {
+    nodes.push(h('div.ideas', IDEAS.map(([label, preset]) =>
+      h('button.chip', { type: 'button', onclick: () => push({ type: 'goal', preset: preset() }) }, label))));
+  }
+  nodes.push(planPanel());
+  nodes.push(h('p.fine', 'On each goal’s day, its amount lands on your list. Tick it off once you’ve moved the money.'));
+  if (goals.length) nodes.push(h('div.group', h('button.item', { type: 'button', onclick: () => push({ type: 'cards' }) }, h('span', 'Cards'), h('span.value', state.cards.length ? String(state.cards.length) : 'None yet'), h('span.chev', { 'aria-hidden': 'true' }))));
+  return nodes;
+}
+
+/* What the plan would give a goal as it's being filled in. */
+function goalPreview(d) {
+  if (d.target > 0 && d.saved >= d.target) return ['Already there.'];
+  const goals = state.goals.filter((x) => x.id !== d.id).concat(d);
+  const ym = monthOf(todayKey());
+  const per = splitPlan(state.cards, goals, planRoom(), state.settings.saveShare, ym).goals.get(d.id) || 0;
+  if (!per) {
+    if (!state.settings.budget && state.settings.plan == null) return ['Set a monthly budget and the plan finds money for it.'];
+    if (planAuto() == null && state.settings.plan == null) return ['The plan starts once it has about 10 days of your spending to go on.'];
+    if (state.cards.some((c) => c.balance > 0)) return ['Everything’s going to cards for now. Slide toward goals once it’s added.'];
+    return ['Your budget has nothing left after bills and usual spending.'];
+  }
+  const n = project(state.cards, goals, planRoom(), state.settings.saveShare, ym).goalMonths.get(d.id);
+  return ['Gets about ', bold(`${money(per, true)} a month`), d.target > 0 && n ? [', there by ', bold(inMonths(n))] : '', '.'];
+}
+
+function goalForm(id, preset = {}) {
+  const g = state.goals.find((x) => x.id === id);
+  const src = g || preset;
+  let kind = src.kind || 'save';
+  const name = textInput({ autocapitalize: 'words', enterkeyhint: 'next' }, src.name);
+  const target = textInput({ inputmode: 'decimal', placeholder: 'Optional', enterkeyhint: 'next' }, src.target ? String(src.target / 100) : '');
+  const saved = textInput({ inputmode: 'decimal', placeholder: '0', enterkeyhint: 'done' }, src.saved ? String(src.saved / 100) : '');
+  const by = h('input', { type: 'month', min: monthOf(todayKey()) });
+  by.value = src.by || '';
+  const shownDate = g ? nextDate(g) : firstOfNextMonth();
+  const date = dateInput(shownDate);
+  const savedLabel = h('span');
+  const preview = h('p.fine.preview');
+  const kinds = h('div.seg', { role: 'group', 'aria-label': 'Kind of goal' },
+    [['save', 'Save'], ['invest', 'Invest']].map(([k, label]) => h('button', {
+      type: 'button',
+      dataset: { k },
+      onclick: () => {
+        kind = k;
+        paint();
+      },
+    }, label)));
+  const draft = () => ({
+    id: g?.id ?? 'new',
+    name: name.value.trim() || 'This goal',
+    kind,
+    target: Math.max(0, readCents(target.value) ?? 0),
+    saved: Math.max(0, readCents(saved.value) ?? 0),
+    by: by.value || null,
+  });
+  function paint() {
+    for (const b of kinds.children) b.setAttribute('aria-pressed', String(b.dataset.k === kind));
+    savedLabel.textContent = kind === 'invest' ? 'Invested so far' : 'Saved so far';
+    name.placeholder = kind === 'invest' ? 'Index fund' : 'Safety net';
+    preview.replaceChildren(h('span', goalPreview(draft())));
+  }
+  for (const i of [name, target, saved, by]) i.addEventListener('input', paint);
+  by.addEventListener('change', paint);
+  paint();
+
+  const submit = () => {
+    const n = name.value.trim();
+    if (!n || !date.value) {
+      toast('Add a name and a day to move money');
+      return;
+    }
+    const d = draft();
+    const fields = { name: n, kind, target: d.target, saved: d.saved, by: d.by };
+    if (g) {
+      Object.assign(g, fields);
+      if (date.value !== shownDate) Object.assign(g, { start: date.value, last: null });
+    } else {
+      state.goals.push({ id: uid(), ...fields, start: date.value, last: null });
+    }
+    done();
+  };
+  const remove = () => {
+    state.goals = state.goals.filter((x) => x !== g);
+    state.entries = state.entries.filter((e) => !(e.due && e.ref === g.id));
+    done();
+  };
+
+  return [
+    formTop(g ? g.name : 'New goal'),
+    kinds,
+    h('div.group', field('Name', name), field('Target', target), h('label.item', savedLabel, saved),
+      field('By', by), field(g ? 'Next move' : 'Move money on', date)),
+    preview,
+    h('button.primary', { type: 'button', onclick: submit }, g ? 'Save' : 'Add goal'),
+    g && h('div.group', h('button.item.danger', { type: 'button', onclick: remove }, 'Delete goal')),
+  ];
+}
+
+/* ---------- bills ---------- */
+
+function repeatsText(b) {
+  if (b.every === 'week') return `Every ${fmt({ weekday: 'long' }).format(parseKey(b.start))}`;
+  if (b.every === 'year') return `Every year on ${shortDate(b.start)}`;
+  return `Every month on the ${ordinal(Number(b.start.slice(8)))}`;
+}
+
+function billsView() {
+  const rows = state.bills.map((b) => h('button.item.two', { type: 'button', onclick: () => push({ type: 'bill', id: b.id }) },
+    h('span.item-main', h('span', b.name), h('small', repeatsText(b))), h('span.amt', fmtPlain(b.cents))));
+  return [
+    listTop('Bills'),
+    h('p.sub.lede', state.bills.length
+      ? `${money(billsPerMonth(), true)} a month, added to your days on their dates.`
+      : 'Rent, loans, subscriptions: added to your days on their dates.'),
+    h('div.group', rows, h('button.item.add', { type: 'button', onclick: () => push({ type: 'bill' }) }, plusIcon(), state.bills.length ? 'Add another bill' : 'Add a bill')),
+  ];
 }
 
 function billForm(id) {
@@ -1623,11 +2183,11 @@ function billForm(id) {
     } else {
       state.bills.push({ id: uid(), name: n, cents, start: date.value, every: every.value, last: null });
     }
-    afterChange();
+    done();
   };
   const remove = () => {
     state.bills = state.bills.filter((x) => x !== b);
-    afterChange();
+    done();
   };
 
   return [
@@ -1637,49 +2197,6 @@ function billForm(id) {
     !b && h('p.fine', 'Already taken out this month? Pick that date and it counts toward this month too.'),
     h('button.primary', { type: 'button', onclick: submit }, b ? 'Save' : 'Add bill'),
     b && h('div.group', h('button.item.danger', { type: 'button', onclick: remove }, 'Delete bill')),
-  ];
-}
-
-function cardForm(id) {
-  const c = state.cards.find((x) => x.id === id);
-  const name = textInput({ placeholder: 'Amex', autocapitalize: 'words', enterkeyhint: 'next' }, c?.name);
-  const balance = textInput({ inputmode: 'decimal', placeholder: '0', enterkeyhint: 'next' }, c ? String(c.balance / 100) : '');
-  const apr = textInput({ inputmode: 'decimal', placeholder: '24.9%', enterkeyhint: 'next' }, c ? `${c.apr}%` : '');
-  const min = textInput({ inputmode: 'decimal', placeholder: 'Optional', enterkeyhint: 'done' }, c?.min ? String(c.min / 100) : '');
-  const shownDate = c ? nextDate(c) : firstOfNextMonth();
-  const date = dateInput(shownDate);
-
-  const submit = () => {
-    const n = name.value.trim();
-    const bal = readCents(balance.value);
-    const rate = toNumber(apr.value.replace(/[^\d.,]/g, '') || '0');
-    const minimum = readCents(min.value) ?? 0;
-    if (!n || bal == null || !date.value || !Number.isFinite(rate) || rate >= 100) {
-      toast('Add a name, what you owe, the interest rate and a due date');
-      return;
-    }
-    if (c) {
-      const moved = date.value !== shownDate;
-      Object.assign(c, { name: n, balance: bal, apr: rate, min: minimum });
-      if (moved) Object.assign(c, { start: date.value, last: null });
-    } else {
-      state.cards.push({ id: uid(), name: n, balance: bal, apr: rate, min: minimum, start: date.value, last: null });
-    }
-    afterChange();
-  };
-  const remove = () => {
-    state.cards = state.cards.filter((x) => x !== c);
-    state.entries = state.entries.filter((e) => !(e.due && e.ref === c.id));
-    afterChange();
-  };
-
-  return [
-    formTop(c ? c.name : 'New card'),
-    h('div.group', field('Name', name), field('Balance owed', balance), field('Interest rate (APR)', apr),
-      field('Minimum payment', min), field(c ? 'Next due date' : 'Due date', date)),
-    h('p.fine', 'For balances you’re paying down. A card you clear in full each month doesn’t need adding: what you log already counts.'),
-    h('button.primary', { type: 'button', onclick: submit }, c ? 'Save' : 'Add card'),
-    c && h('div.group', h('button.item.danger', { type: 'button', onclick: remove }, 'Delete card')),
   ];
 }
 
@@ -1735,7 +2252,6 @@ window.addEventListener('pageshow', (ev) => {
 });
 setInterval(() => {
   if (followToday && view !== todayKey() && document.activeElement !== el.input) refresh();
-  else el.dcUpdated.textContent = updatedText(state.updatedAt);
 }, 60_000);
 
 postDue();
