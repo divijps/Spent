@@ -2,7 +2,7 @@
 
 A tiny daily money log. Write what you spent, see the day add up. Made to live on your iPhone's Home Screen.
 
-**Open it:** https://divijps.github.io/spent/
+**Open it:** https://divijps.github.io/Spent/ (capital S; the address is case-sensitive)
 
 ## Put it on your iPhone
 
@@ -41,3 +41,13 @@ Plain HTML, CSS and JavaScript, with no build step. Serve the folder with any st
 - `app.js` — the interface
 - `sw.js` — offline cache. Bump `CACHE` when you add or rename files.
 - Tests: `node --test tests/lib.test.js`
+
+## Publishing
+
+GitHub Pages serves the `gh-pages` branch. After changing `main`, publish with:
+
+```sh
+git push origin main main:gh-pages
+```
+
+(Or set **Settings → Pages → Source** to `main` and push only to `main`.)
