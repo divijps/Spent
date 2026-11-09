@@ -19,14 +19,16 @@ A tiny daily money log. Write what you spent, see the day add up. Made to live o
 | `+2400 invoice` | money in |
 
 - Your usual entries show up as quick picks under the field. Tap one to log it again.
-- Tap a line to change it. Clear the text, or tap ×, to delete it (with undo).
-- Swipe sideways to move between days. Tap the date to come back to today.
+- Tap a line for its details: what share of the day's limit it took, how often you've bought it this month,
+  and a shortcut to every past one. Edit the text at the top to change it; delete from the ••• menu (with undo).
+- Tap the date for a row of days. **Go to today** brings you back. Swiping sideways between days works too.
+- The ☰ menu has Today, History, Month, Bills and cards, Settings and Save a backup.
 
 ## The bar at the bottom
 
-Set a **monthly budget** (menu, top left: everything you can spend in a month, bills included) and the bar shows:
+Set a **monthly budget** (☰ → Settings: everything you can spend in a month, bills included) and the card shows:
 
-- what you can still spend **today**, out of today's limit. The limit is worked out for you: what's left of the
+- a ring and what you can still spend **today**, out of today's limit. The limit is worked out for you: what's left of the
   month after bills, card payments and what you've already spent, split over the days remaining.
 - what's **left this month**
 - the next bill or card payment, or a card payment waiting to be made
@@ -36,7 +38,7 @@ where the money went.
 
 ## Bills and cards
 
-Menu → **Bills and cards**.
+☰ → **Bills and cards**.
 
 - **Bills** (rent, student loan…) are added to your log on their date, every week, month or year.
 - **Cards**: add what you owe, the interest rate and the due date. Each month the app works out the payment
@@ -58,7 +60,7 @@ and what your most frequent purchase costs over a year.
 Entries are saved in your phone's browser storage and never leave it. This repo holds only the app.
 
 iPhone keeps the Home Screen app's storage separate from Safari's, and removing the icon can remove its data.
-Use **menu → Save a backup** now and then. **Restore a backup** merges it back without duplicates.
+Use **☰ → Save a backup** now and then. **Restore a backup** merges it back without duplicates.
 **Export as spreadsheet** gives you a CSV for Numbers, Excel or Google Sheets.
 
 ## Changing it

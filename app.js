@@ -8,10 +8,14 @@ import {
 const STORE = 'spent.v1'; // same key as the first version, so existing entries carry over
 const $ = (id) => document.getElementById(id);
 const el = {
-  main: $('main'), page: $('page'), title: $('title'), sub: $('sub'),
+  main: $('main'), page: $('page'), title: $('title'), sub: $('sub'), goToday: $('goToday'), tip: $('tip'),
+  strip: $('strip'), stripDays: $('stripDays'), stripDone: $('stripDone'),
   list: $('list'), form: $('form'), input: $('input'), chips: $('chips'), hint: $('hint'),
-  card: $('card'), cMain: $('cMain'), cMainLabel: $('cMainLabel'), cStats: $('cStats'),
-  menuBtn: $('menuBtn'), findBtn: $('findBtn'), scrim: $('scrim'),
+  card: $('card'), cardHint: $('cardHint'), ring: $('ring'), ringArc: $('ringArc'),
+  cMain: $('cMain'), cMainLabel: $('cMainLabel'), cStats: $('cStats'),
+  menuBtn: $('menuBtn'), findBtn: $('findBtn'), scrim: $('scrim'), drawer: $('drawer'), shade: $('shade'),
+  entrySheet: $('entrySheet'), eText: $('eText'), eMore: $('eMore'), ePop: $('ePop'), eDelete: $('eDelete'),
+  ePanel: $('ePanel'), eActions: $('eActions'), eNudge: $('eNudge'), mBills: $('mBills'), mSettings: $('mSettings'),
   monthSheet: $('monthSheet'), mName: $('mName'), mPrev: $('mPrev'), mNext: $('mNext'),
   mBig: $('mBig'), mSub: $('mSub'), mBudget: $('mBudget'), mFixed: $('mFixed'), mFlex: $('mFlex'),
   mFixedLabel: $('mFixedLabel'), mFlexLabel: $('mFlexLabel'), mSetBudget: $('mSetBudget'),
@@ -65,7 +69,7 @@ const blank = () => ({
   bills: [],
   cards: [],
   settings: { currency: 'USD', budget: null, cardMonthly: null },
-  ui: { titleHints: 0 },
+  ui: { tipSeen: false, cardOpens: 0, edited: false },
 });
 const arr = (x) => (Array.isArray(x) ? x : []);
 const posInt = (n) => Number.isInteger(n) && n > 0;
@@ -82,7 +86,9 @@ function load() {
     if (typeof st.currency === 'string' && st.currency) s.settings.currency = st.currency;
     if (posInt(st.budget)) s.settings.budget = st.budget;
     if (posInt(st.cardMonthly)) s.settings.cardMonthly = st.cardMonthly;
-    if (Number.isInteger(raw.ui?.titleHints)) s.ui.titleHints = raw.ui.titleHints;
+    if (raw.ui?.tipSeen === true) s.ui.tipSeen = true;
+    if (raw.ui?.edited === true) s.ui.edited = true;
+    if (Number.isInteger(raw.ui?.cardOpens)) s.ui.cardOpens = raw.ui.cardOpens;
   } catch { /* unreadable: start fresh */ }
   return s;
 }
@@ -127,8 +133,9 @@ function dayTitle(k) {
   if (k === t) return 'Today';
   if (k === addDays(t, -1)) return 'Yesterday';
   const d = parseKey(k);
+  if (k > addDays(t, -7)) return fmt({ weekday: 'long' }).format(d);
   return fmt(d.getFullYear() === thisYear()
-    ? { weekday: 'long', month: 'short', day: 'numeric' }
+    ? { weekday: 'short', month: 'short', day: 'numeric' }
     : { month: 'short', day: 'numeric', year: 'numeric' }).format(d);
 }
 
@@ -160,7 +167,8 @@ function when(k) {
 
 let view = todayKey(); // the day on screen
 let followToday = true; // roll over to the new day at midnight
-let editingId = null;
+let stripOpen = false; // the row of days under the date
+let entryId = null; // the entry open in the details sheet
 let monthView = monthOf(view);
 let openSheetEl = null;
 
@@ -343,20 +351,30 @@ function renderDay(opts = {}) {
   const { out, inn } = totals(items);
   const isToday = view === todayKey();
   el.title.textContent = dayTitle(view);
-  el.title.classList.toggle('away', !isToday);
-  el.title.setAttribute('aria-label', isToday ? 'Today' : `${dayTitle(view)}. Tap to go back to today`);
-  tween(el.sub, out, (v) => subText(v, inn, items.length), opts.animate);
+  el.goToday.hidden = isToday;
+  if (items.length) {
+    tween(el.sub, out, (v) => subText(v, inn, items.length), opts.animate);
+  } else {
+    shown.delete(el.sub);
+    el.sub.textContent = '';
+  }
+  el.tip.hidden = !items.length || state.ui.tipSeen;
   el.list.replaceChildren(...items.map((e) => rowEl(e, e.id === opts.flash)));
+  renderStrip();
   renderBar(opts.animate);
   renderHint();
   if (openSheetEl === el.monthSheet) renderMonth();
   if (openSheetEl === el.findSheet) renderFind();
+  if (openSheetEl === el.entrySheet) renderEntry();
 }
 
-/* The bar: what you can still spend today, what's left this month, and the next thing due. */
+/* The card: a ring for today's limit, what's left of it, what's left this month, and the next thing due. */
 function renderBar(animate) {
   const t = todayKey();
   const stats = [];
+  let progress = 0;
+  let over = false;
+  el.ring.hidden = !state.settings.budget;
   if (!state.settings.budget) {
     shown.delete(el.cMain);
     el.cMain.textContent = 'Set a budget';
@@ -364,23 +382,31 @@ function renderBar(animate) {
   } else {
     const m = monthMath(monthOf(view));
     const limit = limitOn(view, m);
-    const left = limit - totals(byDay(view).filter(isFlex)).out;
-    tween(el.cMain, Math.abs(left), (v) => money(v), animate);
-    const word = view === t ? (left >= 0 ? 'left of' : 'over') : (left >= 0 ? 'under' : 'over');
-    el.cMainLabel.textContent = `${word} ${money(limit, true)}`;
+    const spent = totals(byDay(view).filter(isFlex)).out;
+    const left = limit - spent;
+    over = left < 0;
+    progress = limit ? Math.min(1, spent / limit) : spent ? 1 : 0;
+    const word = over ? 'over' : view === t ? 'left' : 'under';
+    tween(el.cMain, Math.abs(left), (v) => `${money(v)} ${word}`, animate);
+    el.cMainLabel.textContent = view === t ? `of ${money(limit, true)} today` : `of ${money(limit, true)}`;
     const now = monthOf(view) === monthOf(t) ? m : monthMath(monthOf(t));
     stats.push([money(Math.abs(now.left), true), `${now.left >= 0 ? 'left' : 'over'} in ${monthShort(now.ym)}`]);
   }
   const soon = upcoming(10);
   const due = soon.filter((u) => u.due);
+  // a payment waiting to be made goes first, so it stays visible on small phones
   if (due.length) {
     const sum = due.reduce((s, u) => s + u.cents, 0);
-    stats.push([money(sum, true), due.length === 1 ? `pay ${shortName(due[0].name)}` : `${due.length} to pay`]);
+    stats.unshift([money(sum, true), due.length === 1 ? `pay ${shortName(due[0].name)}` : `${due.length} to pay`]);
   } else if (soon.length) {
     stats.push([money(soon[0].cents, true), `${shortName(soon[0].name)} ${when(soon[0].date)}`]);
   }
   el.cStats.replaceChildren(...stats.map(([v, l]) => h('span.stat', h('b', v), h('small', l))));
-  el.card.classList.toggle('alert', due.length > 0);
+  el.card.classList.toggle('alert', due.length > 0); // styles the first stat
+  el.card.classList.toggle('over', over);
+  el.ringArc.style.strokeDasharray = `${Math.round(progress * 100)} 100`;
+  el.ringArc.style.opacity = progress > 0 ? '1' : '0';
+  el.cardHint.hidden = !state.settings.budget || state.ui.cardOpens >= 2;
 }
 
 let hintTimer;
@@ -480,65 +506,172 @@ window.visualViewport?.addEventListener('resize', revealBelowInput);
 
 /* ---------------- editing, deleting, paying ---------------- */
 
-const findRow = (id) => [...el.list.children].find((li) => li.dataset.id === id);
+/* ---------------- an entry's details (tap a line) ---------------- */
 
-function startEdit(id) {
-  if (editingId) commitEdit();
-  const e = state.entries.find((x) => x.id === id);
-  const li = findRow(id);
-  if (!e || !li) return;
-  editingId = id;
-  li.classList.add('editing');
+const ARROW = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 
-  const input = h('input.edit', { type: 'text', autocomplete: 'off', spellcheck: 'false', enterkeyhint: 'done', 'aria-label': 'Edit entry. Clear it to delete.' });
-  input.value = editText(e);
-  const del = h('button.del', { type: 'button', 'aria-label': `Delete ${e.name}` });
-  del.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg>';
-  keepFocus(del);
-  del.addEventListener('click', () => removeEntry(id));
-
-  li.replaceChildren(input, del);
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') {
-      ev.preventDefault();
-      input.blur();
-    } else if (ev.key === 'Escape') {
-      editingId = null;
-      renderDay();
-    }
-  });
-  input.addEventListener('blur', () => {
-    if (editingId === id) commitEdit();
-  });
+function pillBtn(text, onclick) {
+  const b = h('button.pill-btn', { type: 'button', onclick }, h('span', text));
+  b.insertAdjacentHTML('beforeend', ARROW);
+  return b;
 }
 
-function commitEdit() {
-  const id = editingId;
-  if (!id) return;
-  editingId = null;
-  const text = findRow(id)?.querySelector('input')?.value ?? '';
-  const e = state.entries.find((x) => x.id === id);
+/* The entry's text sits in a pill that hugs it, like a tag you can edit. */
+let measure;
+function fitTag() {
+  const i = el.eText;
+  const cs = getComputedStyle(i);
+  measure ||= document.createElement('canvas').getContext('2d');
+  measure.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  i.style.width = `${Math.ceil(measure.measureText(i.value || ' ').width) + 32}px`;
+}
+
+function openEntry(id) {
+  if (!state.entries.some((e) => e.id === id)) return;
+  entryId = id;
+  el.ePop.hidden = true;
+  el.eNudge.hidden = state.ui.edited;
+  renderEntry();
+  openSheet(el.entrySheet);
+  requestAnimationFrame(fitTag);
+  if (!state.ui.tipSeen) {
+    state.ui.tipSeen = true;
+    save();
+    el.tip.hidden = true;
+  }
+}
+
+function renderEntry() {
+  const e = state.entries.find((x) => x.id === entryId);
   if (!e) {
-    renderDay();
+    if (openSheetEl === el.entrySheet) closeSheet();
     return;
   }
+  if (document.activeElement !== el.eText) {
+    el.eText.value = editText(e);
+    fitTag();
+  }
+  el.ePanel.replaceChildren(...entryPanel(e).filter((n) => n instanceof Node));
+  el.eActions.replaceChildren(...entryActions(e).filter((n) => n instanceof Node));
+}
+
+function entryPanel(e) {
+  const month = monthOf(e.date);
+  if (e.income) {
+    return [
+      h('p.lead', `+${money(e.cents)}`, h('small', shortDay(e.date))),
+      h('p.fine', `Money in. ${monthLabel(month)} so far: ${money(totals(inMonth(month)).inn)} in.`),
+    ];
+  }
+  if (e.kind === 'bill') {
+    const b = state.bills.find((x) => x.id === e.ref);
+    return [
+      h('p.lead', money(e.cents), h('small', shortDay(e.date))),
+      h('p.fine', b ? `${repeatsText(b)}. Added on its own and set aside before your daily limit.` : 'Added by a bill you’ve since deleted.'),
+    ];
+  }
+  if (e.kind === 'card') {
+    const c = state.cards.find((x) => x.id === e.ref);
+    return [
+      h('p.lead', money(e.cents), h('small', e.due ? `due ${shortDay(e.date)}` : 'paid')),
+      h('p.fine', e.due
+        ? 'Worked out from your card plan: minimums first, the rest to the highest rate. Tick it off once you’ve paid.'
+        : c ? `${c.name} balance is now about ${money(c.balance, true)}.` : 'Paid.'),
+    ];
+  }
+
+  // everyday spending: where it sits in its day
+  const spent = totals(byDay(e.date).filter(isFlex)).out;
+  const rest = spent - e.cents;
+  const limit = limitOn(e.date);
+  let cols;
+  if (limit) {
+    const left = limit - spent;
+    const pct = (c) => `${Math.round((c / limit) * 100)}%`;
+    cols = [['c1', e.name, e.cents, pct(e.cents)], ['c2', 'Rest of day', rest, pct(rest)],
+      ['c3', left >= 0 ? 'Left' : 'Over', Math.abs(left), pct(Math.abs(left))]];
+  } else {
+    const pct = (c) => `${spent ? Math.round((c / spent) * 100) : 0}%`;
+    cols = [['c1', e.name, e.cents, pct(e.cents)], ['c2', 'Rest of day', rest, pct(rest)]];
+  }
+  const bar = h('div.segbar', cols.map(([c, label, cents]) => {
+    if (label === 'Over' || cents <= 0) return null;
+    const seg = h(`i.${c}`);
+    seg.style.flexGrow = String(cents);
+    return seg;
+  }));
+  const same = inMonth(month).filter((x) => isFlex(x) && x.name.toLocaleLowerCase() === e.name.toLocaleLowerCase());
+  return [
+    h('p.lead', money(e.cents), h('small', shortDay(e.date))),
+    h(`div.split${cols.length === 2 ? '.two' : ''}`, cols.map(([c, label, cents, p]) =>
+      h(`div.${c}`, h('b', label), h('span', h('span.v', money(cents)), p)))),
+    bar,
+    same.length > 1 && h('p.fine', `${plural(same.length, 'time')} in ${monthLabel(month)}, ${money(totals(same).out)} in total.`),
+  ];
+}
+
+function entryActions(e) {
+  const after = (fn) => () => {
+    closeSheet();
+    setTimeout(fn, 160);
+  };
+  if (e.kind === 'card') {
+    const card = state.cards.find((c) => c.id === e.ref);
+    return [
+      e.due && h('button.primary', { type: 'button', onclick: () => markPaid(e.id) }, 'Mark as paid'),
+      card && pillBtn('Edit card', after(() => openBills({ type: 'card', id: card.id }))),
+    ];
+  }
+  if (e.kind === 'bill') {
+    const bill = state.bills.find((b) => b.id === e.ref);
+    return [bill && pillBtn('Edit bill', after(() => openBills({ type: 'bill', id: bill.id })))];
+  }
+  return [pillBtn(`See every ${e.name}`, () => openFind(e.name))];
+}
+
+el.eText.addEventListener('input', fitTag);
+el.eText.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    el.eText.blur();
+  }
+});
+el.eText.addEventListener('change', () => {
+  const e = state.entries.find((x) => x.id === entryId);
+  if (!e) return;
+  const text = el.eText.value;
   if (!text.trim()) {
-    removeEntry(id);
+    closeSheet();
+    removeEntry(e.id);
     return;
   }
   const p = parseEntry(text);
   if (p.ok) Object.assign(e, { name: p.name, cents: p.cents, income: e.kind ? false : p.income });
-  else if (p.reason === 'no-amount' && p.name) e.name = p.name; // renamed but dropped the amount: keep it
+  else if (p.reason === 'no-amount' && p.name) e.name = p.name; // renamed without the amount: keep it
+  state.ui.edited = true;
+  el.eNudge.hidden = true;
   save();
+  el.eText.value = editText(e);
+  fitTag();
   renderDay({ animate: true });
-}
+});
+el.eMore.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  el.ePop.hidden = !el.ePop.hidden;
+});
+el.eDelete.addEventListener('click', () => {
+  const id = entryId;
+  el.ePop.hidden = true;
+  closeSheet();
+  removeEntry(id);
+});
+el.entrySheet.addEventListener('click', (ev) => {
+  if (!ev.target.closest('#ePop, #eMore')) el.ePop.hidden = true;
+});
 
 function removeEntry(id) {
   const i = state.entries.findIndex((x) => x.id === id);
   if (i < 0) return;
-  if (editingId === id) editingId = null;
   const [gone] = state.entries.splice(i, 1);
   save();
   renderDay({ animate: true });
@@ -571,7 +704,7 @@ el.list.addEventListener('click', (ev) => {
   const li = ev.target.closest('.row');
   if (!li) return;
   if (ev.target.closest('.tick')) markPaid(li.dataset.id);
-  else if (!li.classList.contains('editing')) startEdit(li.dataset.id);
+  else openEntry(li.dataset.id);
 });
 
 /* Tapping the empty page below the list starts a new entry; tapping again puts the keyboard away. */
@@ -600,7 +733,6 @@ document.addEventListener('focusout', () => setTimeout(syncTyping, 0));
 function goTo(day, dir = 0, fromX = 0) {
   const t = todayKey();
   if (day > t) day = t;
-  if (editingId) commitEdit();
   if (day === view) {
     snapBack();
     return;
@@ -610,11 +742,6 @@ function goTo(day, dir = 0, fromX = 0) {
     followToday = day === t;
     renderDay();
     window.scrollTo(0, 0);
-    if (day !== t && state.ui.titleHints < 2) {
-      state.ui.titleHints += 1;
-      save();
-      toast('Tap the date to come back to today');
-    }
   };
   const p = el.page;
   if (!dir || reduceMotion.matches) {
@@ -644,14 +771,107 @@ function snapBack() {
   p.style.opacity = '';
 }
 
-el.title.addEventListener('click', () => {
-  if (view !== todayKey()) goTo(todayKey(), 1);
+/* Tap the date for a row of days; "Go to today" appears whenever you're on another day. */
+function setStrip(open) {
+  stripOpen = open;
+  renderStrip();
+}
+
+function stripLabel(k) {
+  const t = todayKey();
+  if (k === t) return 'Today';
+  if (k > addDays(t, -7)) return fmt({ weekday: 'short' }).format(parseKey(k));
+  return shortDate(k);
+}
+
+function renderStrip() {
+  el.strip.hidden = !stripOpen;
+  el.title.setAttribute('aria-expanded', String(stripOpen));
+  if (!stripOpen) return;
+  const t = todayKey();
+  const first = state.entries.reduce((m, e) => (e.date < m ? e.date : m), t);
+  let start = later(first, addDays(t, -30));
+  if (start > addDays(t, -6)) start = addDays(t, -6);
+  if (view < start) start = view;
+  const days = [];
+  for (let k = start; k <= t; k = addDays(k, 1)) days.push(k);
+  el.stripDays.replaceChildren(
+    h('button.strip-all', {
+      type: 'button',
+      onclick: () => {
+        setStrip(false);
+        openFind('');
+      },
+    }, 'View all history'),
+    ...days.map((k) => h(`button${k === view ? '.on' : ''}`, {
+      type: 'button',
+      'aria-current': k === view ? 'date' : false,
+      onclick: () => goTo(k, k > view ? 1 : -1),
+    }, stripLabel(k))),
+  );
+  requestAnimationFrame(() => {
+    const on = el.stripDays.querySelector('.on');
+    if (on) el.stripDays.scrollLeft = on.offsetLeft - el.stripDays.offsetLeft - (el.stripDays.clientWidth - on.offsetWidth) / 2;
+  });
+}
+
+el.title.addEventListener('click', () => setStrip(!stripOpen));
+el.stripDone.addEventListener('click', () => setStrip(false));
+el.goToday.addEventListener('click', () => goTo(todayKey(), 1));
+
+/* ---------------- drawer ---------------- */
+
+const drawerOpen = () => document.body.classList.contains('drawer-open');
+
+function openDrawer() {
+  if (openSheetEl) closeSheet();
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  document.body.classList.add('drawer-open');
+  el.drawer.inert = false;
+  el.drawer.setAttribute('aria-hidden', 'false');
+  el.main.inert = true;
+}
+
+function closeDrawer() {
+  if (!drawerOpen()) return;
+  document.body.classList.remove('drawer-open');
+  el.drawer.inert = true;
+  el.drawer.setAttribute('aria-hidden', 'true');
+  el.main.inert = false;
+}
+
+el.menuBtn.addEventListener('click', () => (drawerOpen() ? closeDrawer() : openDrawer()));
+el.shade.addEventListener('click', closeDrawer);
+
+// a swipe to the left closes it
+let drawerX = null;
+for (const node of [el.shade, el.drawer]) {
+  node.addEventListener('touchstart', (ev) => { drawerX = ev.touches[0].clientX; }, { passive: true });
+  node.addEventListener('touchmove', (ev) => {
+    if (drawerX !== null && ev.touches[0].clientX - drawerX < -36) {
+      drawerX = null;
+      closeDrawer();
+    }
+  }, { passive: true });
+}
+
+el.drawer.addEventListener('click', (ev) => {
+  const go = ev.target.closest('[data-go]')?.dataset.go;
+  if (!go) return;
+  closeDrawer();
+  const soon = (fn) => setTimeout(fn, 200);
+  if (go === 'today') goTo(todayKey(), 1);
+  else if (go === 'history') soon(() => openFind(''));
+  else if (go === 'month') soon(() => openMonth(monthOf(view)));
+  else if (go === 'bills') soon(() => openBills());
+  else if (go === 'settings') soon(() => openMenu());
+  else if (go === 'backup') backup();
 });
 
 let swipe = null;
 el.main.addEventListener('touchstart', (ev) => {
   swipe = null;
-  if (ev.touches.length !== 1 || editingId || openSheetEl || document.activeElement === el.input) return;
+  if (ev.touches.length !== 1 || openSheetEl || drawerOpen() || document.activeElement === el.input || ev.target.closest('.strip')) return;
   const t = ev.touches[0];
   swipe = { x: t.clientX, y: t.clientY, dx: 0, axis: null };
 }, { passive: true });
@@ -692,6 +912,10 @@ document.addEventListener('keydown', (ev) => {
     closeSheet();
     return;
   }
+  if (ev.key === 'Escape' && drawerOpen()) {
+    closeDrawer();
+    return;
+  }
   const typing = document.activeElement && ['INPUT', 'SELECT'].includes(document.activeElement.tagName);
   if (typing || openSheetEl || ev.metaKey || ev.ctrlKey || ev.altKey) return;
   if (ev.key === 'ArrowLeft') goTo(addDays(view, -1), -1);
@@ -700,10 +924,10 @@ document.addEventListener('keydown', (ev) => {
 
 /* ---------------- sheets ---------------- */
 
-const sheets = [el.monthSheet, el.menuSheet, el.billsSheet, el.findSheet];
+const sheets = [el.entrySheet, el.monthSheet, el.menuSheet, el.billsSheet, el.findSheet];
 
 function openSheet(sheet) {
-  if (editingId) commitEdit();
+  if (drawerOpen()) closeDrawer();
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   for (const s of sheets) {
     if (s === sheet) continue;
@@ -798,8 +1022,16 @@ function openMonth(ym) {
 }
 
 el.card.addEventListener('click', () => {
-  if (state.settings.budget) openMonth(monthOf(view));
-  else openMenu(true);
+  if (!state.settings.budget) {
+    openMenu(true);
+    return;
+  }
+  if (state.ui.cardOpens < 2) {
+    state.ui.cardOpens += 1;
+    save();
+  }
+  openMonth(monthOf(view));
+  renderBar();
 });
 let cardY = null;
 el.card.addEventListener('touchstart', (ev) => { cardY = ev.touches[0].clientY; }, { passive: true });
@@ -820,6 +1052,8 @@ el.mNext.addEventListener('click', () => {
   renderMonth();
 });
 el.mSetBudget.addEventListener('click', () => openMenu(true));
+el.mBills.addEventListener('click', () => openBills());
+el.mSettings.addEventListener('click', () => openMenu());
 
 /* Short sentences worked out on the phone from your own numbers. Each is a list of text and bold parts. */
 const bold = (t) => h('b', t);
@@ -1070,7 +1304,6 @@ function openMenu(focusBudget = false) {
   if (focusBudget) el.budget.focus();
 }
 
-el.menuBtn.addEventListener('click', () => openMenu());
 
 /** '2,400' / '$2400' → cents, or null when empty or not a number. */
 function readCents(text) {
@@ -1132,10 +1365,11 @@ el.exportBtn.addEventListener('click', () => {
   shareFile(`spent-${todayKey()}.csv`, 'text/csv', toCSV(state.entries));
 });
 
-el.backupBtn.addEventListener('click', () => {
+function backup() {
   const data = { app: 'spent', ...state, saved: new Date().toISOString() };
   shareFile(`spent-backup-${todayKey()}.json`, 'application/json', JSON.stringify(data));
-});
+}
+el.backupBtn.addEventListener('click', backup);
 
 el.restoreBtn.addEventListener('click', () => el.restoreFile.click());
 
@@ -1196,8 +1430,8 @@ el.eraseBtn.addEventListener('click', () => {
 
 let billsForm = null; // null: the list; { type: 'bill' | 'card', id? }: a form
 
-function openBills() {
-  billsForm = null;
+function openBills(form = null) {
+  billsForm = form;
   renderBills();
   openSheet(el.billsSheet);
 }
@@ -1426,8 +1660,8 @@ let hiddenAt = 0;
 function refresh() {
   postDue();
   const t = todayKey();
-  if (followToday && view !== t && !editingId) view = t;
-  if (!editingId) renderDay();
+  if (followToday && view !== t) view = t;
+  renderDay();
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1436,14 +1670,14 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   // back after a while: start from today again
-  if (hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000 && !editingId) followToday = true;
+  if (hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) followToday = true;
   refresh();
 });
 window.addEventListener('pageshow', (ev) => {
   if (ev.persisted) refresh();
 });
 setInterval(() => {
-  if (followToday && view !== todayKey() && !editingId && document.activeElement !== el.input) refresh();
+  if (followToday && view !== todayKey() && document.activeElement !== el.input) refresh();
 }, 60_000);
 
 postDue();
@@ -1456,7 +1690,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   const hadController = !!navigator.serviceWorker.controller;
   let reloading = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    const busy = editingId || el.input.value.trim() || openSheetEl;
+    const busy = el.input.value.trim() || openSheetEl || drawerOpen();
     if (hadController && !reloading && !busy) {
       reloading = true;
       location.reload();
